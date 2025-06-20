@@ -311,12 +311,7 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 
 	log.Printf("Starting to process %d messages for channel %s", len(validMessages), channelInfo.Name)
 
-	for i, msg := range validMessages {
-		previewText := msg.Text
-		if len(previewText) > 50 {
-			previewText = previewText[:50] + "..."
-		}
-		log.Printf("Processing message %d/%d: %s", i+1, len(validMessages), previewText)
+	for _, msg := range validMessages {
 		// Get user info
 		userInfo, err := slackClient.GetUserInfo(msg.User)
 		if err != nil {
