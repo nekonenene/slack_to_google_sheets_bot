@@ -19,6 +19,8 @@ const (
 var (
 	processingEvents = make(map[string]bool)
 	processingMutex  = sync.Mutex{}
+	recentMentions   = make(map[string]time.Time)
+	recentMutex      = sync.Mutex{}
 )
 
 func HandleEvent(cfg *config.Config, event *Event) error {
@@ -47,6 +49,21 @@ func HandleEvent(cfg *config.Config, event *Event) error {
 		}
 		processingEvents[eventKey] = true
 		processingMutex.Unlock()
+
+		// Check for recent mentions in same channel (within 120 seconds)
+		recentMutex.Lock()
+		if lastMentionTime, exists := recentMentions[event.Event.Channel]; exists {
+			if time.Since(lastMentionTime) < 120*time.Second {
+				recentMutex.Unlock()
+				processingMutex.Lock()
+				delete(processingEvents, eventKey)
+				processingMutex.Unlock()
+				log.Printf("Recent mention detected in channel %s (within 120s), skipping", event.Event.Channel)
+				return nil
+			}
+		}
+		recentMentions[event.Event.Channel] = time.Now()
+		recentMutex.Unlock()
 
 		// Clean up after processing
 		defer func() {
@@ -378,5 +395,6 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 	}
 
 	log.Printf("App mention processed: %d messages recorded from #%s", processedCount, channelInfo.Name)
+	log.Printf("App mention processing completed for user %s, timestamp %s", event.Event.User, event.Event.Timestamp)
 	return nil
 }
