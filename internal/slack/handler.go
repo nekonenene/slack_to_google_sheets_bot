@@ -51,12 +51,12 @@ func HandleEvent(cfg *config.Config, event *Event) error {
 		recentMemberJoinMutex.Lock()
 		channelKey := fmt.Sprintf("channel_%s", event.Event.Channel)
 		if lastJoinTime, exists := recentMemberJoins[channelKey]; exists {
-			if time.Since(lastJoinTime) < 120*time.Second {
+			if time.Since(lastJoinTime) < 90*time.Second {
 				recentMemberJoinMutex.Unlock()
 				processingMutex.Lock()
 				delete(processingEvents, eventKey)
 				processingMutex.Unlock()
-				log.Printf("Recent member join detected in channel %s (within 120s), skipping", event.Event.Channel)
+				log.Printf("Recent member join detected in channel %s (within 90s), skipping", event.Event.Channel)
 				return nil
 			}
 		}
@@ -96,15 +96,15 @@ func HandleEvent(cfg *config.Config, event *Event) error {
 		processingEvents[eventKey] = true
 		processingMutex.Unlock()
 
-		// Check for recent mentions in same channel (within 120 seconds) or if blocked by member join
+		// Check for recent mentions in same channel (within 90 seconds) or if blocked by member join
 		recentMutex.Lock()
 		if lastMentionTime, exists := recentMentions[event.Event.Channel]; exists {
-			if time.Since(lastMentionTime) < 120*time.Second {
+			if time.Since(lastMentionTime) < 90*time.Second {
 				recentMutex.Unlock()
 				processingMutex.Lock()
 				delete(processingEvents, eventKey)
 				processingMutex.Unlock()
-				log.Printf("Recent mention detected in channel %s (within 120s) or blocked by member join, skipping", event.Event.Channel)
+				log.Printf("Recent mention detected in channel %s (within 90s) or blocked by member join, skipping", event.Event.Channel)
 				return nil
 			}
 		}
