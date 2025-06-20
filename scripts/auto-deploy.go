@@ -95,6 +95,7 @@ func buildAndDeploy(remoteHost, remotePath, remoteUser string) {
 	}
 
 	log.Println("Deploying to remote server...")
+	log.Println("Note: You may be prompted for sudo password during service restart")
 
 	// Rsync binary to remote server
 	rsyncCmd := exec.Command("rsync", "-avz", "--delete",
@@ -122,17 +123,32 @@ func buildAndDeploy(remoteHost, remotePath, remoteUser string) {
 		}
 	}
 
-	// Restart service on remote server
-	restartCmd := exec.Command("ssh", fmt.Sprintf("%s@%s", remoteUser, remoteHost),
-		fmt.Sprintf("sudo systemctl restart slack-to-google-sheets-bot || %s/slack-to-google-sheets-bot &", remotePath))
+	// Start or restart service on remote server (with TTY for sudo password input)
+	serviceCmd := exec.Command("ssh", "-t", fmt.Sprintf("%s@%s", remoteUser, remoteHost),
+		fmt.Sprintf("sudo systemctl is-active slack-to-google-sheets-bot >/dev/null 2>&1 && sudo systemctl restart slack-to-google-sheets-bot || sudo systemctl start slack-to-google-sheets-bot"))
 
-	// Capture both stdout and stderr
-	restartOutput, err := restartCmd.CombinedOutput()
-	if err != nil {
-		log.Printf("Restart failed: %s", err)
-		log.Printf("SSH output: %s", string(restartOutput))
+	// Connect stdin/stdout/stderr for interactive sudo
+	serviceCmd.Stdin = os.Stdin
+	serviceCmd.Stdout = os.Stdout
+	serviceCmd.Stderr = os.Stderr
+
+	if err := serviceCmd.Run(); err != nil {
+		log.Printf("Service start/restart failed: %s", err)
 		log.Printf("Check SSH connection and sudo permissions for %s@%s", remoteUser, remoteHost)
 		return
+	}
+
+	// Verify service is running
+	log.Println("Verifying service status...")
+	verifyCmd := exec.Command("ssh", "-t", fmt.Sprintf("%s@%s", remoteUser, remoteHost),
+		"echo 'Service status:' && sudo systemctl is-active slack-to-google-sheets-bot && echo 'Service is active' || echo 'Service is not active'")
+
+	verifyCmd.Stdin = os.Stdin
+	verifyCmd.Stdout = os.Stdout
+	verifyCmd.Stderr = os.Stderr
+
+	if err := verifyCmd.Run(); err != nil {
+		log.Printf("⚠️  Could not verify service status: %s", err)
 	}
 
 	log.Println("✅ Deploy completed successfully")
@@ -140,6 +156,7 @@ func buildAndDeploy(remoteHost, remotePath, remoteUser string) {
 
 func deployEnvFile(remoteHost, remotePath, remoteUser, envFilePath string) {
 	log.Printf("Deploying environment file: %s", envFilePath)
+	log.Println("Note: You may be prompted for sudo password during service restart")
 
 	// Check if file exists
 	if _, err := os.Stat(envFilePath); os.IsNotExist(err) {
@@ -161,15 +178,17 @@ func deployEnvFile(remoteHost, remotePath, remoteUser, envFilePath string) {
 		return
 	}
 
-	// Restart service on remote server
-	restartCmd := exec.Command("ssh", fmt.Sprintf("%s@%s", remoteUser, remoteHost),
-		fmt.Sprintf("sudo systemctl restart slack-to-google-sheets-bot || %s/slack-to-google-sheets-bot &", remotePath))
+	// Start or restart service on remote server (with TTY for sudo password input)
+	serviceCmd := exec.Command("ssh", "-t", fmt.Sprintf("%s@%s", remoteUser, remoteHost),
+		fmt.Sprintf("sudo systemctl is-active slack-to-google-sheets-bot >/dev/null 2>&1 && sudo systemctl restart slack-to-google-sheets-bot || sudo systemctl start slack-to-google-sheets-bot"))
 
-	// Capture both stdout and stderr
-	restartOutput, err := restartCmd.CombinedOutput()
-	if err != nil {
-		log.Printf("Service restart failed: %s", err)
-		log.Printf("SSH output: %s", string(restartOutput))
+	// Connect stdin/stdout/stderr for interactive sudo
+	serviceCmd.Stdin = os.Stdin
+	serviceCmd.Stdout = os.Stdout
+	serviceCmd.Stderr = os.Stderr
+
+	if err := serviceCmd.Run(); err != nil {
+		log.Printf("Service start/restart failed: %s", err)
 		log.Printf("Check SSH connection and sudo permissions for %s@%s", remoteUser, remoteHost)
 		return
 	}
