@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -78,18 +79,30 @@ func (c *Client) WriteMessage(spreadsheetID string, record *MessageRecord) error
 		return nil
 	}
 
-	// Prepare the row data
-	threadInfo := ""
+	// Get the next row number (No.)
+	nextRowNumber, err := c.getNextRowNumber(spreadsheetID, sheetName)
+	if err != nil {
+		log.Printf("Warning: could not get next row number: %v", err)
+		nextRowNumber = 1 // Default to 1 if we can't determine
+	}
+
+	// Find thread parent No. if this is a thread reply
+	threadParentNo := ""
 	if record.ThreadTS != "" && record.ThreadTS != record.MessageTS {
-		threadInfo = record.ThreadTS
+		if parentNo, err := c.findThreadParentNo(spreadsheetID, sheetName, record.ThreadTS); err != nil {
+			log.Printf("Warning: could not find thread parent: %v", err)
+		} else if parentNo > 0 {
+			threadParentNo = fmt.Sprintf("%d", parentNo)
+		}
 	}
 
 	values := []interface{}{
+		nextRowNumber,
 		record.Timestamp.Format("2006-01-02 15:04:05"),
 		record.UserHandle,
 		record.UserRealName,
 		record.Text,
-		threadInfo,
+		threadParentNo,
 		record.MessageTS,
 	}
 
@@ -98,9 +111,9 @@ func (c *Client) WriteMessage(spreadsheetID string, record *MessageRecord) error
 		Values: [][]interface{}{values},
 	}
 
-	_, err := c.service.Spreadsheets.Values.Append(
+	_, err = c.service.Spreadsheets.Values.Append(
 		spreadsheetID,
-		sheetName+"!A:F",
+		sheetName+"!A:G",
 		valueRange,
 	).ValueInputOption("RAW").Do()
 
@@ -112,8 +125,8 @@ func (c *Client) WriteMessage(spreadsheetID string, record *MessageRecord) error
 }
 
 func (c *Client) messageExistsInSheet(spreadsheetID, sheetName, messageTS string) (bool, error) {
-	// Get all message IDs from column F in the specific sheet
-	resp, err := c.service.Spreadsheets.Values.Get(spreadsheetID, sheetName+"!F:F").Do()
+	// Get all message IDs from column G in the specific sheet
+	resp, err := c.service.Spreadsheets.Values.Get(spreadsheetID, sheetName+"!G:G").Do()
 	if err != nil {
 		return false, err
 	}
@@ -163,6 +176,7 @@ func (c *Client) ensureSheetExists(spreadsheetID, sheetName string) error {
 
 	// Add headers
 	headers := []interface{}{
+		"No.",
 		"投稿日時",
 		"発信者（ハンドル名）",
 		"発信者（本名）",
@@ -177,7 +191,7 @@ func (c *Client) ensureSheetExists(spreadsheetID, sheetName string) error {
 
 	_, err = c.service.Spreadsheets.Values.Update(
 		spreadsheetID,
-		sheetName+"!A1:F1",
+		sheetName+"!A1:G1",
 		headerRange,
 	).ValueInputOption("RAW").Do()
 
@@ -276,6 +290,7 @@ func (c *Client) ensureChannelSheetExists(spreadsheetID, channelID, channelName 
 
 	// Add headers to new sheet
 	headers := []interface{}{
+		"No.",
 		"投稿日時",
 		"発信者（ハンドル名）",
 		"発信者（本名）",
@@ -290,7 +305,7 @@ func (c *Client) ensureChannelSheetExists(spreadsheetID, channelID, channelName 
 
 	_, err = c.service.Spreadsheets.Values.Update(
 		spreadsheetID,
-		expectedSheetName+"!A1:F1",
+		expectedSheetName+"!A1:G1",
 		headerRange,
 	).ValueInputOption("RAW").Do()
 
@@ -300,4 +315,51 @@ func (c *Client) ensureChannelSheetExists(spreadsheetID, channelID, channelName 
 
 	log.Printf("Sheet created successfully: '%s'", expectedSheetName)
 	return nil
+}
+
+func (c *Client) getNextRowNumber(spreadsheetID, sheetName string) (int, error) {
+	// Get all data to count existing rows
+	resp, err := c.service.Spreadsheets.Values.Get(spreadsheetID, sheetName+"!A:A").Do()
+	if err != nil {
+		return 1, err
+	}
+
+	// Count rows (subtract 1 for header row, then add 1 for next number)
+	rowCount := len(resp.Values)
+	if rowCount <= 1 {
+		return 1, nil // First data row after header
+	}
+
+	return rowCount, nil // This gives us the next row number
+}
+
+func (c *Client) findThreadParentNo(spreadsheetID, sheetName, threadTS string) (int, error) {
+	// Get message timestamps (column G) and row numbers (column A)
+	resp, err := c.service.Spreadsheets.Values.Get(spreadsheetID, sheetName+"!A:G").Do()
+	if err != nil {
+		return 0, err
+	}
+
+	// Skip header row (index 0) and search for the thread parent
+	for i, row := range resp.Values {
+		if i == 0 {
+			continue // Skip header
+		}
+
+		if len(row) >= 7 && row[6] == threadTS {
+			// Found the parent message, return its No. (column A)
+			if len(row) >= 1 {
+				if rowNo, ok := row[0].(float64); ok {
+					return int(rowNo), nil
+				}
+				if rowNoStr, ok := row[0].(string); ok {
+					if rowNo, err := strconv.Atoi(rowNoStr); err == nil {
+						return rowNo, nil
+					}
+				}
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("thread parent not found")
 }

@@ -32,3 +32,6 @@ This is a new project - no Go code has been implemented yet. When implementing:
 
 ## Git Guidelines
 - Commit message must be one line
+
+## Code Maintenance
+- Do `go fmt` after go file changes
