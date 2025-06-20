@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -180,9 +182,14 @@ func (c *Client) SendMessage(channel, text string) error {
 }
 
 type HistoryResponse struct {
-	OK       bool             `json:"ok"`
-	Messages []HistoryMessage `json:"messages"`
-	HasMore  bool             `json:"has_more"`
+	OK               bool             `json:"ok"`
+	Messages         []HistoryMessage `json:"messages"`
+	HasMore          bool             `json:"has_more"`
+	ResponseMetadata ResponseMetadata `json:"response_metadata"`
+}
+
+type ResponseMetadata struct {
+	NextCursor string `json:"next_cursor"`
 }
 
 type HistoryMessage struct {
@@ -194,36 +201,154 @@ type HistoryMessage struct {
 }
 
 func (c *Client) GetChannelHistory(channelID string, limit int) ([]HistoryMessage, error) {
-	url := fmt.Sprintf("https://slack.com/api/conversations.history?channel=%s&limit=%d", channelID, limit)
+	var allMessages []HistoryMessage
+	cursor := ""
+	pageLimit := 200 // Maximum per page
 
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
+	log.Printf("Starting to retrieve channel history for %s (limit: %d)", channelID, limit)
+
+	for {
+		var url string
+		if cursor == "" {
+			url = fmt.Sprintf("https://slack.com/api/conversations.history?channel=%s&limit=%d", channelID, pageLimit)
+		} else {
+			url = fmt.Sprintf("https://slack.com/api/conversations.history?channel=%s&limit=%d&cursor=%s", channelID, pageLimit, cursor)
+		}
+
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Authorization", "Bearer "+c.token)
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+
+		var historyResp HistoryResponse
+		if err := json.Unmarshal(body, &historyResp); err != nil {
+			return nil, err
+		}
+
+		if !historyResp.OK {
+			return nil, fmt.Errorf("slack API error: %s", string(body))
+		}
+
+		log.Printf("Retrieved %d messages in this page", len(historyResp.Messages))
+
+		// Add main messages
+		allMessages = append(allMessages, historyResp.Messages...)
+
+		// Get thread replies for each message with thread_ts
+		for _, msg := range historyResp.Messages {
+			if msg.ThreadTS != "" && msg.ThreadTS == msg.Timestamp {
+				// This is a parent message, get its replies
+				threadReplies, err := c.getThreadReplies(channelID, msg.ThreadTS)
+				if err != nil {
+					log.Printf("Error getting thread replies for %s: %v", msg.ThreadTS, err)
+					continue
+				}
+				log.Printf("Retrieved %d thread replies for message %s", len(threadReplies), msg.ThreadTS)
+				allMessages = append(allMessages, threadReplies...)
+			}
+		}
+
+		// Check if we have more pages and haven't reached the limit
+		if !historyResp.HasMore || (limit > 0 && len(allMessages) >= limit) {
+			break
+		}
+
+		cursor = historyResp.ResponseMetadata.NextCursor
+		if cursor == "" {
+			break
+		}
+
+		// Add rate limiting between requests
+		time.Sleep(150 * time.Millisecond)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	// Sort messages by timestamp (oldest first)
+	sort.Slice(allMessages, func(i, j int) bool {
+		return allMessages[i].Timestamp < allMessages[j].Timestamp
+	})
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
+	// Apply limit if specified
+	if limit > 0 && len(allMessages) > limit {
+		allMessages = allMessages[:limit]
 	}
 
-	var historyResp HistoryResponse
-	if err := json.Unmarshal(body, &historyResp); err != nil {
-		return nil, err
+	log.Printf("Retrieved %d total messages (including thread replies) from channel %s", len(allMessages), channelID)
+	return allMessages, nil
+}
+
+func (c *Client) getThreadReplies(channelID, threadTS string) ([]HistoryMessage, error) {
+	var allReplies []HistoryMessage
+	cursor := ""
+	pageLimit := 200 // Maximum per page
+
+	for {
+		var url string
+		if cursor == "" {
+			url = fmt.Sprintf("https://slack.com/api/conversations.replies?channel=%s&ts=%s&limit=%d", channelID, threadTS, pageLimit)
+		} else {
+			url = fmt.Sprintf("https://slack.com/api/conversations.replies?channel=%s&ts=%s&limit=%d&cursor=%s", channelID, threadTS, pageLimit, cursor)
+		}
+
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Authorization", "Bearer "+c.token)
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+
+		var repliesResp HistoryResponse
+		if err := json.Unmarshal(body, &repliesResp); err != nil {
+			return nil, err
+		}
+
+		if !repliesResp.OK {
+			return nil, fmt.Errorf("slack API error getting thread replies: %s", string(body))
+		}
+
+		// Skip the first message as it's the parent (already included in main messages)
+		if len(repliesResp.Messages) > 1 {
+			allReplies = append(allReplies, repliesResp.Messages[1:]...)
+		}
+
+		// Check if we have more pages
+		if !repliesResp.HasMore {
+			break
+		}
+
+		cursor = repliesResp.ResponseMetadata.NextCursor
+		if cursor == "" {
+			break
+		}
+
+		// Add rate limiting between requests
+		time.Sleep(150 * time.Millisecond)
 	}
 
-	if !historyResp.OK {
-		return nil, fmt.Errorf("slack API error: %s", string(body))
-	}
-
-	return historyResp.Messages, nil
+	return allReplies, nil
 }
 
 func (c *Client) FormatMessageText(text string) string {

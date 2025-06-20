@@ -272,8 +272,8 @@ func handleMemberJoined(cfg *config.Config, event *Event) error {
 			return err
 		}
 
-		// Get channel history for initial recording (limit to 100 messages to avoid overwhelming)
-		messages, err := slackClient.GetChannelHistory(event.Event.Channel, 100)
+		// Get channel history for initial recording (all messages)
+		messages, err := slackClient.GetChannelHistory(event.Event.Channel, 0)
 		if err != nil {
 			log.Printf("Error getting channel history for initial recording: %v", err)
 			errorMessage := "❌ チャンネル履歴の取得に失敗しました。"
@@ -281,10 +281,9 @@ func handleMemberJoined(cfg *config.Config, event *Event) error {
 			return err
 		}
 
-		// Filter out bot messages and process in reverse order (oldest first)
+		// Filter out bot messages (messages are already sorted oldest first)
 		var validMessages []HistoryMessage
-		for i := len(messages) - 1; i >= 0; i-- {
-			msg := messages[i]
+		for _, msg := range messages {
 			if msg.Type == "message" && msg.User != "" && msg.Text != "" {
 				validMessages = append(validMessages, msg)
 			}
@@ -442,8 +441,8 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 		return err
 	}
 
-	// Get channel history (limit to 100 messages to avoid overwhelming)
-	messages, err := slackClient.GetChannelHistory(event.Event.Channel, 100)
+	// Get channel history (all messages)
+	messages, err := slackClient.GetChannelHistory(event.Event.Channel, 0)
 	if err != nil {
 		log.Printf("Error getting channel history: %v", err)
 		errorMessage := "❌ チャンネル履歴の取得に失敗しました。"
@@ -451,10 +450,9 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 		return err
 	}
 
-	// Filter out bot messages and process in reverse order (oldest first)
+	// Filter out bot messages (messages are already sorted oldest first)
 	var validMessages []HistoryMessage
-	for i := len(messages) - 1; i >= 0; i-- {
-		msg := messages[i]
+	for _, msg := range messages {
 		if msg.Type == "message" && msg.User != "" && msg.Text != "" {
 			validMessages = append(validMessages, msg)
 		}
