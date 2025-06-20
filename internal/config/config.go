@@ -25,7 +25,7 @@ func Load() *Config {
 		SlackBotToken:           os.Getenv("SLACK_BOT_TOKEN"),
 		SlackSigningSecret:      os.Getenv("SLACK_SIGNING_SECRET"),
 		GoogleSheetsCredentials: os.Getenv("GOOGLE_SHEETS_CREDENTIALS"),
-		SpreadsheetID:           os.Getenv("SPREADSHEET_ID"),
+		SpreadsheetID:           os.Getenv("GOOGLE_SPREADSHEET_ID"),
 		Port:                    getEnvOrDefault("PORT", "8080"),
 	}
 }

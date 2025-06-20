@@ -57,8 +57,8 @@ Slack app that records channel posts to Google Sheets.
 5. **Setup Google Spreadsheet**:
    - Create a new Google Spreadsheet
    - Copy the spreadsheet ID from the URL:
-     - URL: `https://docs.google.com/spreadsheets/d/SPREADSHEET_ID/edit`
-     - Copy the `SPREADSHEET_ID` part
+     - URL: `https://docs.google.com/spreadsheets/d/GOOGLE_SPREADSHEET_ID/edit`
+     - Copy the `GOOGLE_SPREADSHEET_ID` part
    - **Important**: Share the spreadsheet with the service account:
      - Click **Share** in your spreadsheet
      - Add the service account email (found in `credentials.json` as `client_email`)
@@ -76,7 +76,7 @@ Slack app that records channel posts to Google Sheets.
    SLACK_BOT_TOKEN=xoxb-1234567890-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx
    SLACK_SIGNING_SECRET=a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
    GOOGLE_SHEETS_CREDENTIALS=./credentials.json
-   SPREADSHEET_ID=1abCD2efGH3ijKL4mnOP5qrST6uvWX7yzAB8CdEfGh9I
+   GOOGLE_SPREADSHEET_ID=1abCD2efGH3ijKL4mnOP5qrST6uvWX7yzAB8CdEfGh9I
    PORT=55999
    ```
 
@@ -84,7 +84,7 @@ Slack app that records channel posts to Google Sheets.
    - `SLACK_BOT_TOKEN`: From Slack app → OAuth & Permissions → Bot User OAuth Token
    - `SLACK_SIGNING_SECRET`: From Slack app → Basic Information → Signing Secret
    - `GOOGLE_SHEETS_CREDENTIALS`: Path to your downloaded `credentials.json` file
-   - `SPREADSHEET_ID`: From your Google Sheets URL (the long ID between `/d/` and `/edit`)
+   - `GOOGLE_SPREADSHEET_ID`: From your Google Sheets URL (the long ID between `/d/` and `/edit`)
    - `PORT`: The port your server will run on (55999 is recommended)
 
 ### 4. Development Setup
