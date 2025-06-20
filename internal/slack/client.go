@@ -49,48 +49,90 @@ func NewClient(token string) *Client {
 	}
 }
 
+const maxRetryAttempts = 4
+
+// retryWithBackoff executes a function with exponential backoff retry logic
+func retryWithBackoff(operation func() error, description string) error {
+	var lastErr error
+
+	for attempt := 1; attempt <= maxRetryAttempts; attempt++ {
+		lastErr = operation()
+		if lastErr == nil {
+			if attempt > 1 {
+				log.Printf("Retry successful for %s on attempt %d", description, attempt)
+			}
+			return nil
+		}
+
+		log.Printf("Attempt %d failed for %s: %v", attempt, description, lastErr)
+
+		// If this was the last attempt, don't sleep
+		if attempt == maxRetryAttempts {
+			break
+		}
+
+		// Sleep for attempt seconds (1s, 2s, 3s)
+		delay := time.Duration(attempt) * time.Second
+		log.Printf("Retrying %s in %v (attempt %d)...", description, delay, attempt+1)
+		time.Sleep(delay)
+	}
+
+	log.Printf("All retry attempts failed for %s. Final error: %v", description, lastErr)
+	return lastErr
+}
+
 func (c *Client) GetUserInfo(userID string) (*UserInfo, error) {
 	// Check cache first
 	if user, exists := c.userCache[userID]; exists {
 		return user, nil
 	}
 
-	// Rate limiting: small delay between API calls
-	time.Sleep(100 * time.Millisecond)
+	var result *UserInfo
+	err := retryWithBackoff(func() error {
+		// Rate limiting: small delay between API calls
+		time.Sleep(100 * time.Millisecond)
 
-	url := fmt.Sprintf("https://slack.com/api/users.info?user=%s", userID)
+		url := fmt.Sprintf("https://slack.com/api/users.info?user=%s", userID)
 
-	req, err := http.NewRequest("GET", url, nil)
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return err
+		}
+
+		req.Header.Set("Authorization", "Bearer "+c.token)
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+
+		var userResp UserResponse
+		if err := json.Unmarshal(body, &userResp); err != nil {
+			return err
+		}
+
+		if !userResp.OK {
+			return fmt.Errorf("slack API error: %s", string(body))
+		}
+
+		result = &userResp.User
+		return nil
+	}, fmt.Sprintf("get user info for %s", userID))
+
 	if err != nil {
 		return nil, err
-	}
-
-	req.Header.Set("Authorization", "Bearer "+c.token)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var userResp UserResponse
-	if err := json.Unmarshal(body, &userResp); err != nil {
-		return nil, err
-	}
-
-	if !userResp.OK {
-		return nil, fmt.Errorf("slack API error: %s", string(body))
 	}
 
 	// Cache the result
-	c.userCache[userID] = &userResp.User
+	c.userCache[userID] = result
 
-	return &userResp.User, nil
+	return result, nil
 }
 
 func (c *Client) GetChannelInfo(channelID string) (*ChannelInfo, error) {
@@ -99,86 +141,98 @@ func (c *Client) GetChannelInfo(channelID string) (*ChannelInfo, error) {
 		return channel, nil
 	}
 
-	// Rate limiting: small delay between API calls
-	time.Sleep(100 * time.Millisecond)
+	var result *ChannelInfo
+	err := retryWithBackoff(func() error {
+		// Rate limiting: small delay between API calls
+		time.Sleep(100 * time.Millisecond)
 
-	url := fmt.Sprintf("https://slack.com/api/conversations.info?channel=%s", channelID)
+		url := fmt.Sprintf("https://slack.com/api/conversations.info?channel=%s", channelID)
 
-	req, err := http.NewRequest("GET", url, nil)
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return err
+		}
+
+		req.Header.Set("Authorization", "Bearer "+c.token)
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+
+		var channelResp ChannelResponse
+		if err := json.Unmarshal(body, &channelResp); err != nil {
+			return err
+		}
+
+		if !channelResp.OK {
+			return fmt.Errorf("slack API error: %s", string(body))
+		}
+
+		result = &channelResp.Channel
+		return nil
+	}, fmt.Sprintf("get channel info for %s", channelID))
+
 	if err != nil {
 		return nil, err
-	}
-
-	req.Header.Set("Authorization", "Bearer "+c.token)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var channelResp ChannelResponse
-	if err := json.Unmarshal(body, &channelResp); err != nil {
-		return nil, err
-	}
-
-	if !channelResp.OK {
-		return nil, fmt.Errorf("slack API error: %s", string(body))
 	}
 
 	// Cache the result
-	c.channelCache[channelID] = &channelResp.Channel
+	c.channelCache[channelID] = result
 
-	return &channelResp.Channel, nil
+	return result, nil
 }
 
 func (c *Client) SendMessage(channel, text string) error {
-	url := "https://slack.com/api/chat.postMessage"
+	return retryWithBackoff(func() error {
+		url := "https://slack.com/api/chat.postMessage"
 
-	payload := map[string]interface{}{
-		"channel": channel,
-		"text":    text,
-	}
+		payload := map[string]interface{}{
+			"channel": channel,
+			"text":    text,
+		}
 
-	jsonData, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
+		jsonData, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
 
-	req, err := http.NewRequest("POST", url, strings.NewReader(string(jsonData)))
-	if err != nil {
-		return err
-	}
+		req, err := http.NewRequest("POST", url, strings.NewReader(string(jsonData)))
+		if err != nil {
+			return err
+		}
 
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
 
-	var response map[string]interface{}
-	if err := json.Unmarshal(body, &response); err != nil {
-		return err
-	}
+		var response map[string]interface{}
+		if err := json.Unmarshal(body, &response); err != nil {
+			return err
+		}
 
-	if ok, exists := response["ok"].(bool); !exists || !ok {
-		return fmt.Errorf("slack API error: %s", string(body))
-	}
+		if ok, exists := response["ok"].(bool); !exists || !ok {
+			return fmt.Errorf("slack API error: %s", string(body))
+		}
 
-	return nil
+		return nil
+	}, fmt.Sprintf("send message to channel %s", channel))
 }
 
 type HistoryResponse struct {
@@ -208,38 +262,46 @@ func (c *Client) GetChannelHistory(channelID string, limit int) ([]HistoryMessag
 	log.Printf("Starting to retrieve channel history for %s (limit: %d)", channelID, limit)
 
 	for {
-		var url string
-		if cursor == "" {
-			url = fmt.Sprintf("https://slack.com/api/conversations.history?channel=%s&limit=%d", channelID, pageLimit)
-		} else {
-			url = fmt.Sprintf("https://slack.com/api/conversations.history?channel=%s&limit=%d&cursor=%s", channelID, pageLimit, cursor)
-		}
-
-		req, err := http.NewRequest("GET", url, nil)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Authorization", "Bearer "+c.token)
-
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		defer resp.Body.Close()
-
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return nil, err
-		}
-
 		var historyResp HistoryResponse
-		if err := json.Unmarshal(body, &historyResp); err != nil {
-			return nil, err
-		}
+		err := retryWithBackoff(func() error {
+			var url string
+			if cursor == "" {
+				url = fmt.Sprintf("https://slack.com/api/conversations.history?channel=%s&limit=%d", channelID, pageLimit)
+			} else {
+				url = fmt.Sprintf("https://slack.com/api/conversations.history?channel=%s&limit=%d&cursor=%s", channelID, pageLimit, cursor)
+			}
 
-		if !historyResp.OK {
-			return nil, fmt.Errorf("slack API error: %s", string(body))
+			req, err := http.NewRequest("GET", url, nil)
+			if err != nil {
+				return err
+			}
+
+			req.Header.Set("Authorization", "Bearer "+c.token)
+
+			resp, err := c.httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return err
+			}
+
+			if err := json.Unmarshal(body, &historyResp); err != nil {
+				return err
+			}
+
+			if !historyResp.OK {
+				return fmt.Errorf("slack API error: %s", string(body))
+			}
+
+			return nil
+		}, fmt.Sprintf("get channel history page for %s", channelID))
+
+		if err != nil {
+			return nil, err
 		}
 
 		log.Printf("Retrieved %d messages in this page", len(historyResp.Messages))
@@ -295,38 +357,46 @@ func (c *Client) getThreadReplies(channelID, threadTS string) ([]HistoryMessage,
 	pageLimit := 200 // Maximum per page
 
 	for {
-		var url string
-		if cursor == "" {
-			url = fmt.Sprintf("https://slack.com/api/conversations.replies?channel=%s&ts=%s&limit=%d", channelID, threadTS, pageLimit)
-		} else {
-			url = fmt.Sprintf("https://slack.com/api/conversations.replies?channel=%s&ts=%s&limit=%d&cursor=%s", channelID, threadTS, pageLimit, cursor)
-		}
-
-		req, err := http.NewRequest("GET", url, nil)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Authorization", "Bearer "+c.token)
-
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		defer resp.Body.Close()
-
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return nil, err
-		}
-
 		var repliesResp HistoryResponse
-		if err := json.Unmarshal(body, &repliesResp); err != nil {
-			return nil, err
-		}
+		err := retryWithBackoff(func() error {
+			var url string
+			if cursor == "" {
+				url = fmt.Sprintf("https://slack.com/api/conversations.replies?channel=%s&ts=%s&limit=%d", channelID, threadTS, pageLimit)
+			} else {
+				url = fmt.Sprintf("https://slack.com/api/conversations.replies?channel=%s&ts=%s&limit=%d&cursor=%s", channelID, threadTS, pageLimit, cursor)
+			}
 
-		if !repliesResp.OK {
-			return nil, fmt.Errorf("slack API error getting thread replies: %s", string(body))
+			req, err := http.NewRequest("GET", url, nil)
+			if err != nil {
+				return err
+			}
+
+			req.Header.Set("Authorization", "Bearer "+c.token)
+
+			resp, err := c.httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return err
+			}
+
+			if err := json.Unmarshal(body, &repliesResp); err != nil {
+				return err
+			}
+
+			if !repliesResp.OK {
+				return fmt.Errorf("slack API error getting thread replies: %s", string(body))
+			}
+
+			return nil
+		}, fmt.Sprintf("get thread replies for %s in %s", threadTS, channelID))
+
+		if err != nil {
+			return nil, err
 		}
 
 		// Skip the first message as it's the parent (already included in main messages)

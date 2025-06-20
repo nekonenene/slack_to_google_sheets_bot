@@ -62,6 +62,38 @@ func NewClient(credentialsJSON string) (*Client, error) {
 	return &Client{service: service}, nil
 }
 
+const maxRetryAttempts = 4
+
+// retryWithBackoff executes a function with exponential backoff retry logic
+func retryWithBackoff(operation func() error, description string) error {
+	var lastErr error
+
+	for attempt := 1; attempt <= maxRetryAttempts; attempt++ {
+		lastErr = operation()
+		if lastErr == nil {
+			if attempt > 1 {
+				log.Printf("Retry successful for %s on attempt %d", description, attempt)
+			}
+			return nil
+		}
+
+		log.Printf("Attempt %d failed for %s: %v", attempt, description, lastErr)
+
+		// If this was the last attempt, don't sleep
+		if attempt == maxRetryAttempts {
+			break
+		}
+
+		// Sleep for attempt seconds (1s, 2s, 3s)
+		delay := time.Duration(attempt) * time.Second
+		log.Printf("Retrying %s in %v (attempt %d)...", description, delay, attempt+1)
+		time.Sleep(delay)
+	}
+
+	log.Printf("All retry attempts failed for %s. Final error: %v", description, lastErr)
+	return lastErr
+}
+
 type MessageRecord struct {
 	Timestamp    time.Time
 	Channel      string
@@ -598,15 +630,19 @@ func (c *Client) WriteBatchMessages(spreadsheetID string, records []*MessageReco
 
 	// Batch insert all new messages
 	if len(values) > 0 {
-		valueRange := &sheets.ValueRange{
-			Values: values,
-		}
+		err := retryWithBackoff(func() error {
+			valueRange := &sheets.ValueRange{
+				Values: values,
+			}
 
-		_, err = c.service.Spreadsheets.Values.Append(
-			spreadsheetID,
-			sheetName+"!A:G",
-			valueRange,
-		).ValueInputOption("RAW").Do()
+			_, err := c.service.Spreadsheets.Values.Append(
+				spreadsheetID,
+				sheetName+"!A:G",
+				valueRange,
+			).ValueInputOption("RAW").Do()
+
+			return err
+		}, fmt.Sprintf("write %d messages to sheet %s", len(values), sheetName))
 
 		if err != nil {
 			return fmt.Errorf("unable to write batch data to sheet: %v", err)

@@ -345,12 +345,13 @@ func handleMemberJoined(cfg *config.Config, event *Event) error {
 
 			// Write all messages in batch (this ensures chronological order)
 			if err := sheetsClient.WriteBatchMessages(cfg.SpreadsheetID, records); err != nil {
-				log.Printf("Error writing batch messages to sheets: %v", err)
-				errorMessage := fmt.Sprintf("❌ スプレッドシートへの記録に失敗しました。\n"+
+				log.Printf("Error writing batch messages to sheets after retries: %v", err)
+				errorMessage := fmt.Sprintf("❌ 初回記録のスプレッドシートへの記録に失敗しました（4回試行後）\n"+
 					"エラー: %v\n"+
-					"管理者にお問い合わせください。", err)
-				if err := slackClient.SendMessage(event.Event.Channel, errorMessage); err != nil {
-					log.Printf("Error sending failure notification: %v", err)
+					"ネットワークまたはAPI制限の問題の可能性があります。\n"+
+					"しばらく時間をおいてから再度お試しください。", err)
+				if notifyErr := slackClient.SendMessage(event.Event.Channel, errorMessage); notifyErr != nil {
+					log.Printf("Error sending failure notification after retries: %v", notifyErr)
 				}
 				return err
 			}
@@ -539,12 +540,14 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 	var failureCount int
 
 	if err := sheetsClient.WriteBatchMessages(cfg.SpreadsheetID, records); err != nil {
-		log.Printf("Error writing batch messages to sheets: %v", err)
-		errorMessage := fmt.Sprintf("❌ スプレッドシートへの記録に失敗しました。\n"+
+		log.Printf("Error writing batch messages to sheets after retries: %v", err)
+		errorMessage := fmt.Sprintf("❌ スプレッドシートへの記録に失敗しました（4回試行後）\n"+
 			"エラー: %v\n"+
-			"管理者にお問い合わせください。", err)
-		if err := slackClient.SendMessage(event.Event.Channel, errorMessage); err != nil {
-			log.Printf("Error sending failure notification: %v", err)
+			"ネットワークまたはAPI制限の問題の可能性があります。\n"+
+			"しばらく時間をおいてから再度お試しください。", err)
+		// Slack通知も再試行ロジックを使用
+		if notifyErr := slackClient.SendMessage(event.Event.Channel, errorMessage); notifyErr != nil {
+			log.Printf("Error sending failure notification after retries: %v", notifyErr)
 		}
 		return err
 	}
