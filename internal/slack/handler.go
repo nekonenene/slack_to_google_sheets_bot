@@ -43,7 +43,7 @@ func HandleEvent(cfg *config.Config, event *Event) error {
 	userInfo, err := slackClient.GetUserInfo(event.Event.User)
 	if err != nil {
 		log.Printf("Error getting user info: %v", err)
-		userInfo = &UserInfo{ID: event.Event.User, Name: "Unknown"}
+		userInfo = &UserInfo{ID: event.Event.User, Name: "Unknown", RealName: "Unknown"}
 	}
 
 	// Get channel information
@@ -60,15 +60,20 @@ func HandleEvent(cfg *config.Config, event *Event) error {
 	}
 	timestamp := time.Unix(int64(ts), 0)
 
+	// Format message text (convert mentions and channels)
+	formattedText := slackClient.FormatMessageText(event.Event.Text)
+
 	// Create message record
 	record := sheets.MessageRecord{
-		Timestamp:   timestamp,
-		Channel:     event.Event.Channel,
-		ChannelName: channelInfo.Name,
-		User:        event.Event.User,
-		UserName:    userInfo.Name,
-		Text:        event.Event.Text,
-		ThreadTS:    event.Event.ThreadTS,
+		Timestamp:    timestamp,
+		Channel:      event.Event.Channel,
+		ChannelName:  channelInfo.Name,
+		User:         event.Event.User,
+		UserHandle:   userInfo.Name,
+		UserRealName: userInfo.RealName,
+		Text:         formattedText,
+		ThreadTS:     event.Event.ThreadTS,
+		MessageTS:    event.Event.Timestamp,
 	}
 
 	// Write to Google Sheets
@@ -112,9 +117,9 @@ func HandleEvent(cfg *config.Config, event *Event) error {
 			return err
 		}
 
-		log.Printf("Message recorded: %s in #%s by %s", record.Text, record.ChannelName, record.UserName)
+		log.Printf("Message recorded: %s in #%s by %s", record.Text, record.ChannelName, record.UserHandle)
 	} else {
-		log.Printf("Google Sheets not configured, message logged: %s in #%s by %s", record.Text, record.ChannelName, record.UserName)
+		log.Printf("Google Sheets not configured, message logged: %s in #%s by %s", record.Text, record.ChannelName, record.UserHandle)
 	}
 
 	return nil
@@ -150,9 +155,9 @@ func handleMemberJoined(cfg *config.Config, event *Event) error {
 			return err
 		}
 
-		// Ensure sheet exists (this will create it if needed)
-		if err := sheetsClient.EnsureSheetExists(cfg.SpreadsheetID, "Messages"); err != nil {
-			log.Printf("Error ensuring sheet exists: %v", err)
+		// Ensure channel-specific sheet exists (this will create it if needed)
+		if err := sheetsClient.EnsureChannelSheetExists(cfg.SpreadsheetID, event.Event.Channel, channelInfo.Name); err != nil {
+			log.Printf("Error ensuring channel sheet exists: %v", err)
 			return err
 		}
 
@@ -243,7 +248,7 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 		userInfo, err := slackClient.GetUserInfo(msg.User)
 		if err != nil {
 			log.Printf("Error getting user info for %s: %v", msg.User, err)
-			userInfo = &UserInfo{ID: msg.User, Name: "Unknown"}
+			userInfo = &UserInfo{ID: msg.User, Name: "Unknown", RealName: "Unknown"}
 		}
 
 		// Parse timestamp
@@ -253,15 +258,20 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 		}
 		timestamp := time.Unix(int64(ts), 0)
 
+		// Format message text (convert mentions and channels)
+		formattedText := slackClient.FormatMessageText(msg.Text)
+
 		// Create message record
 		record := sheets.MessageRecord{
-			Timestamp:   timestamp,
-			Channel:     event.Event.Channel,
-			ChannelName: channelInfo.Name,
-			User:        msg.User,
-			UserName:    userInfo.Name,
-			Text:        msg.Text,
-			ThreadTS:    msg.ThreadTS,
+			Timestamp:    timestamp,
+			Channel:      event.Event.Channel,
+			ChannelName:  channelInfo.Name,
+			User:         msg.User,
+			UserHandle:   userInfo.Name,
+			UserRealName: userInfo.RealName,
+			Text:         formattedText,
+			ThreadTS:     msg.ThreadTS,
+			MessageTS:    msg.Timestamp,
 		}
 
 		// Write to Google Sheets
