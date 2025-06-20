@@ -301,14 +301,14 @@ func handleMemberJoined(cfg *config.Config, event *Event) error {
 
 			log.Printf("Starting to process %d messages for initial recording in channel %s", len(validMessages), channelInfo.Name)
 
-			// Process each message with failure tracking
-			var lastError error
+			// Prepare all message records for batch processing
+			var records []*sheets.MessageRecord
 			for i, msg := range validMessages {
 				previewText := msg.Text
 				if len(previewText) > 50 {
 					previewText = previewText[:50] + "..."
 				}
-				log.Printf("Processing message %d/%d: %s", i+1, len(validMessages), previewText)
+				log.Printf("Preparing message %d/%d: %s", i+1, len(validMessages), previewText)
 
 				// Get user info
 				userInfo, err := slackClient.GetUserInfo(msg.User)
@@ -328,7 +328,7 @@ func handleMemberJoined(cfg *config.Config, event *Event) error {
 				formattedText := slackClient.FormatMessageText(msg.Text)
 
 				// Create message record
-				record := sheets.MessageRecord{
+				record := &sheets.MessageRecord{
 					Timestamp:    timestamp,
 					Channel:      event.Event.Channel,
 					ChannelName:  channelInfo.Name,
@@ -340,33 +340,23 @@ func handleMemberJoined(cfg *config.Config, event *Event) error {
 					MessageTS:    msg.Timestamp,
 				}
 
-				// Write to Google Sheets
-				if err := sheetsClient.WriteMessage(cfg.SpreadsheetID, &record); err != nil {
-					log.Printf("Error writing message to sheets: %v", err)
-					failureCount++
-					lastError = err
-
-					// Check if we've exceeded the failure limit
-					if failureCount >= MaxFailureCount {
-						errorMessage := fmt.Sprintf("❌ スプレッドシートへの記録で%d回連続して失敗したため、処理を中断します。\n"+
-							"最後のエラー: %v\n"+
-							"記録済みメッセージ数: %d件\n"+
-							"管理者にお問い合わせください。", MaxFailureCount, lastError, processedCount)
-
-						if err := slackClient.SendMessage(event.Event.Channel, errorMessage); err != nil {
-							log.Printf("Error sending failure notification: %v", err)
-						}
-
-						log.Printf("Stopped initial recording due to %d consecutive failures. Last error: %v", MaxFailureCount, lastError)
-						return fmt.Errorf("too many failures (%d): %v", MaxFailureCount, lastError)
-					}
-					continue
-				}
-
-				// Reset failure count on success
-				failureCount = 0
-				processedCount++
+				records = append(records, record)
 			}
+
+			// Write all messages in batch (this ensures chronological order)
+			if err := sheetsClient.WriteBatchMessages(cfg.SpreadsheetID, records); err != nil {
+				log.Printf("Error writing batch messages to sheets: %v", err)
+				errorMessage := fmt.Sprintf("❌ スプレッドシートへの記録に失敗しました。\n"+
+					"エラー: %v\n"+
+					"管理者にお問い合わせください。", err)
+				if err := slackClient.SendMessage(event.Event.Channel, errorMessage); err != nil {
+					log.Printf("Error sending failure notification: %v", err)
+				}
+				return err
+			}
+
+			processedCount = len(records)
+			failureCount = 0
 		}
 
 		// Send completion message with sheet URL and statistics
@@ -469,7 +459,7 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 			return err
 		}
 
-		resetMessage := fmt.Sprintf("✅ シートをリセットしました。全履歴を再取得します...")
+		resetMessage := "✅ シートをリセットしました。全履歴を再取得します..."
 		if err := slackClient.SendMessage(event.Event.Channel, resetMessage); err != nil {
 			log.Printf("Error sending reset confirmation: %v", err)
 		}
@@ -500,14 +490,17 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 		return nil
 	}
 
-	// Process each message with failure tracking
-	processedCount := 0
-	failureCount := 0
-	var lastError error
-
 	log.Printf("Starting to process %d messages for channel %s", len(validMessages), channelInfo.Name)
 
-	for _, msg := range validMessages {
+	// Prepare all message records for batch processing
+	var records []*sheets.MessageRecord
+	for i, msg := range validMessages {
+		previewText := msg.Text
+		if len(previewText) > 50 {
+			previewText = previewText[:50] + "..."
+		}
+		log.Printf("Preparing message %d/%d: %s", i+1, len(validMessages), previewText)
+
 		// Get user info
 		userInfo, err := slackClient.GetUserInfo(msg.User)
 		if err != nil {
@@ -526,7 +519,7 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 		formattedText := slackClient.FormatMessageText(msg.Text)
 
 		// Create message record
-		record := sheets.MessageRecord{
+		record := &sheets.MessageRecord{
 			Timestamp:    timestamp,
 			Channel:      event.Event.Channel,
 			ChannelName:  channelInfo.Name,
@@ -538,33 +531,26 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 			MessageTS:    msg.Timestamp,
 		}
 
-		// Write to Google Sheets
-		if err := sheetsClient.WriteMessage(cfg.SpreadsheetID, &record); err != nil {
-			log.Printf("Error writing message to sheets: %v", err)
-			failureCount++
-			lastError = err
-
-			// Check if we've exceeded the failure limit
-			if failureCount >= MaxFailureCount {
-				errorMessage := fmt.Sprintf("❌ スプレッドシートへの記録で%d回連続して失敗したため、処理を中断します。\n"+
-					"最後のエラー: %v\n"+
-					"記録済みメッセージ数: %d件\n"+
-					"管理者にお問い合わせください。", MaxFailureCount, lastError, processedCount)
-
-				if err := slackClient.SendMessage(event.Event.Channel, errorMessage); err != nil {
-					log.Printf("Error sending failure notification: %v", err)
-				}
-
-				log.Printf("Stopped processing due to %d consecutive failures. Last error: %v", MaxFailureCount, lastError)
-				return fmt.Errorf("too many failures (%d): %v", MaxFailureCount, lastError)
-			}
-			continue
-		}
-
-		// Reset failure count on success
-		failureCount = 0
-		processedCount++
+		records = append(records, record)
 	}
+
+	// Write all messages in batch (this ensures chronological order)
+	var processedCount int
+	var failureCount int
+
+	if err := sheetsClient.WriteBatchMessages(cfg.SpreadsheetID, records); err != nil {
+		log.Printf("Error writing batch messages to sheets: %v", err)
+		errorMessage := fmt.Sprintf("❌ スプレッドシートへの記録に失敗しました。\n"+
+			"エラー: %v\n"+
+			"管理者にお問い合わせください。", err)
+		if err := slackClient.SendMessage(event.Event.Channel, errorMessage); err != nil {
+			log.Printf("Error sending failure notification: %v", err)
+		}
+		return err
+	}
+
+	processedCount = len(records)
+	failureCount = 0
 
 	// Send completion message
 	sheetURL := fmt.Sprintf("https://docs.google.com/spreadsheets/d/%s", cfg.SpreadsheetID)

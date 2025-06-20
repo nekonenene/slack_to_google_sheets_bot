@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -510,5 +511,109 @@ func (c *Client) ClearSheetData(spreadsheetID, sheetName string) error {
 	}
 
 	log.Printf("Cleared all data from sheet %s (keeping headers)", sheetName)
+	return nil
+}
+
+func (c *Client) WriteBatchMessages(spreadsheetID string, records []*MessageRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+
+	// Sort records by timestamp (oldest first)
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].Timestamp.Before(records[j].Timestamp)
+	})
+
+	// Use the first record to determine sheet name (all should be same channel)
+	sheetName := fmt.Sprintf("%s-%s", records[0].ChannelName, records[0].Channel)
+
+	// Ensure sheet exists
+	if err := c.ensureChannelSheetExists(spreadsheetID, records[0].Channel, records[0].ChannelName); err != nil {
+		return err
+	}
+
+	// Get existing sheet data
+	sheetData, err := c.getSheetData(spreadsheetID, sheetName)
+	if err != nil {
+		return fmt.Errorf("failed to get sheet data: %v", err)
+	}
+
+	// Check and fix header if needed
+	if err := c.ensureCorrectHeader(spreadsheetID, sheetName, sheetData); err != nil {
+		log.Printf("Warning: could not ensure correct header: %v", err)
+		// Reload data after header fix
+		sheetData, err = c.getSheetData(spreadsheetID, sheetName)
+		if err != nil {
+			return fmt.Errorf("failed to reload sheet data after header fix: %v", err)
+		}
+	}
+
+	// Filter out duplicate messages
+	var newRecords []*MessageRecord
+	for _, record := range records {
+		if !c.messageExistsInData(sheetData, record.MessageTS) {
+			newRecords = append(newRecords, record)
+		}
+	}
+
+	if len(newRecords) == 0 {
+		log.Printf("All messages already exist in sheet %s, nothing to add", sheetName)
+		return nil
+	}
+
+	// Prepare values for batch insert
+	var values [][]interface{}
+	startRowNumber := c.getNextRowNumberFromData(sheetData)
+
+	for i, record := range newRecords {
+		rowNumber := startRowNumber + i
+
+		// Find thread parent No. if this is a thread reply
+		threadParentNo := ""
+		if record.ThreadTS != "" && record.ThreadTS != record.MessageTS {
+			// Check in existing data first
+			if parentNo := c.findThreadParentNoInData(sheetData, record.ThreadTS); parentNo > 0 {
+				threadParentNo = fmt.Sprintf("%d", parentNo)
+			} else {
+				// Check in the current batch being processed
+				for j := 0; j < i; j++ {
+					if newRecords[j].MessageTS == record.ThreadTS {
+						threadParentNo = fmt.Sprintf("%d", startRowNumber+j)
+						break
+					}
+				}
+			}
+		}
+
+		values = append(values, []interface{}{
+			rowNumber,
+			record.Timestamp.Format("2006-01-02 15:04:05"),
+			record.UserHandle,
+			record.UserRealName,
+			record.Text,
+			threadParentNo,
+			record.MessageTS,
+		})
+	}
+
+	// Batch insert all new messages
+	if len(values) > 0 {
+		valueRange := &sheets.ValueRange{
+			Values: values,
+		}
+
+		_, err = c.service.Spreadsheets.Values.Append(
+			spreadsheetID,
+			sheetName+"!A:G",
+			valueRange,
+		).ValueInputOption("RAW").Do()
+
+		if err != nil {
+			return fmt.Errorf("unable to write batch data to sheet: %v", err)
+		}
+
+		log.Printf("Successfully wrote %d messages to sheet %s in chronological order", len(values), sheetName)
+	}
+
 	return nil
 }
