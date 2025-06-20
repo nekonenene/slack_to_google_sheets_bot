@@ -1,0 +1,316 @@
+package slack
+
+import (
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+	"time"
+
+	"slack-to-google-sheets-bot/internal/config"
+	"slack-to-google-sheets-bot/internal/sheets"
+)
+
+const (
+	MaxFailureCount = 3
+)
+
+func HandleEvent(cfg *config.Config, event *Event) error {
+	// Handle member joined channel event
+	if event.Event.Type == "member_joined_channel" {
+		return handleMemberJoined(cfg, event)
+	}
+
+	// Handle app mention event
+	if event.Event.Type == "app_mention" {
+		return handleAppMention(cfg, event)
+	}
+
+	// Only handle message events
+	if event.Event.Type != "message" {
+		return nil
+	}
+
+	// Skip bot messages and messages without text
+	if event.Event.User == "" || event.Event.Text == "" {
+		return nil
+	}
+
+	// Create Slack client
+	slackClient := NewClient(cfg.SlackBotToken)
+
+	// Get user information
+	userInfo, err := slackClient.GetUserInfo(event.Event.User)
+	if err != nil {
+		log.Printf("Error getting user info: %v", err)
+		userInfo = &UserInfo{ID: event.Event.User, Name: "Unknown"}
+	}
+
+	// Get channel information
+	channelInfo, err := slackClient.GetChannelInfo(event.Event.Channel)
+	if err != nil {
+		log.Printf("Error getting channel info: %v", err)
+		channelInfo = &ChannelInfo{ID: event.Event.Channel, Name: "Unknown"}
+	}
+
+	// Parse timestamp
+	ts, err := strconv.ParseFloat(event.Event.Timestamp, 64)
+	if err != nil {
+		ts = float64(time.Now().Unix())
+	}
+	timestamp := time.Unix(int64(ts), 0)
+
+	// Create message record
+	record := sheets.MessageRecord{
+		Timestamp:   timestamp,
+		Channel:     event.Event.Channel,
+		ChannelName: channelInfo.Name,
+		User:        event.Event.User,
+		UserName:    userInfo.Name,
+		Text:        event.Event.Text,
+		ThreadTS:    event.Event.ThreadTS,
+	}
+
+	// Write to Google Sheets
+	if cfg.GoogleSheetsCredentials != "" && cfg.SpreadsheetID != "" {
+		log.Printf("Creating Google Sheets client with credentials length: %d", len(cfg.GoogleSheetsCredentials))
+		sheetsClient, err := sheets.NewClient(cfg.GoogleSheetsCredentials)
+		if err != nil {
+			log.Printf("Error creating Google Sheets client: %v", err)
+			preview := cfg.GoogleSheetsCredentials
+			if len(preview) > 100 {
+				preview = preview[:100]
+			}
+			log.Printf("Credentials preview: %s...", preview)
+			log.Printf("Credentials starts with: %c", cfg.GoogleSheetsCredentials[0])
+			log.Printf("Is it a file path? Contains '.json': %t", strings.Contains(cfg.GoogleSheetsCredentials, ".json"))
+
+			// Send error notification to Slack
+			slackClient := NewClient(cfg.SlackBotToken)
+			errorMessage := fmt.Sprintf("❌ Google Sheetsへの接続に失敗しました。\n"+
+				"エラー: %v\n"+
+				"管理者にお問い合わせください。", err)
+			if err := slackClient.SendMessage(event.Event.Channel, errorMessage); err != nil {
+				log.Printf("Error sending failure notification: %v", err)
+			}
+
+			return err
+		}
+
+		if err := sheetsClient.WriteMessage(cfg.SpreadsheetID, &record); err != nil {
+			log.Printf("Error writing to Google Sheets: %v", err)
+
+			// Send error notification to Slack for individual message failures
+			slackClient := NewClient(cfg.SlackBotToken)
+			errorMessage := fmt.Sprintf("⚠️ メッセージの記録に失敗しました。\n"+
+				"エラー: %v\n"+
+				"管理者にお問い合わせください。", err)
+			if err := slackClient.SendMessage(event.Event.Channel, errorMessage); err != nil {
+				log.Printf("Error sending failure notification: %v", err)
+			}
+
+			return err
+		}
+
+		log.Printf("Message recorded: %s in #%s by %s", record.Text, record.ChannelName, record.UserName)
+	} else {
+		log.Printf("Google Sheets not configured, message logged: %s in #%s by %s", record.Text, record.ChannelName, record.UserName)
+	}
+
+	return nil
+}
+
+func handleMemberJoined(cfg *config.Config, event *Event) error {
+	// Check if the bot itself was added to the channel
+	slackClient := NewClient(cfg.SlackBotToken)
+
+	// Get bot user info to check if it's the bot being added
+	// For now, we'll handle any member join as a potential bot addition
+
+	// Get channel information
+	channelInfo, err := slackClient.GetChannelInfo(event.Event.Channel)
+	if err != nil {
+		log.Printf("Error getting channel info for member join: %v", err)
+		channelInfo = &ChannelInfo{ID: event.Event.Channel, Name: "Unknown"}
+	}
+
+	// Send initial message
+	message := fmt.Sprintf("🚀 初回の記録を開始します...\n"+
+		"このチャンネル (#%s) のメッセージをGoogle Sheetsに記録します。", channelInfo.Name)
+
+	if err := slackClient.SendMessage(event.Event.Channel, message); err != nil {
+		log.Printf("Error sending initial message: %v", err)
+	}
+
+	// Initialize Google Sheets if configured
+	if cfg.GoogleSheetsCredentials != "" && cfg.SpreadsheetID != "" {
+		sheetsClient, err := sheets.NewClient(cfg.GoogleSheetsCredentials)
+		if err != nil {
+			log.Printf("Error creating Google Sheets client: %v", err)
+			return err
+		}
+
+		// Ensure sheet exists (this will create it if needed)
+		if err := sheetsClient.EnsureSheetExists(cfg.SpreadsheetID, "Messages"); err != nil {
+			log.Printf("Error ensuring sheet exists: %v", err)
+			return err
+		}
+
+		// Send completion message with sheet URL
+		sheetURL := fmt.Sprintf("https://docs.google.com/spreadsheets/d/%s", cfg.SpreadsheetID)
+		completionMessage := fmt.Sprintf("✅ スプレッドシートへの記録が完了しました！\n"+
+			"記録先: %s", sheetURL)
+
+		if err := slackClient.SendMessage(event.Event.Channel, completionMessage); err != nil {
+			log.Printf("Error sending completion message: %v", err)
+		}
+
+		log.Printf("Bot added to channel #%s, sheet initialized", channelInfo.Name)
+	} else {
+		// Send message about missing configuration
+		configMessage := "⚠️ Google Sheetsの設定が完了していません。管理者にお問い合わせください。"
+		if err := slackClient.SendMessage(event.Event.Channel, configMessage); err != nil {
+			log.Printf("Error sending config message: %v", err)
+		}
+	}
+
+	return nil
+}
+
+func handleAppMention(cfg *config.Config, event *Event) error {
+	slackClient := NewClient(cfg.SlackBotToken)
+
+	// Get channel information
+	channelInfo, err := slackClient.GetChannelInfo(event.Event.Channel)
+	if err != nil {
+		log.Printf("Error getting channel info for app mention: %v", err)
+		channelInfo = &ChannelInfo{ID: event.Event.Channel, Name: "Unknown"}
+	}
+
+	// Send acknowledgment message
+	ackMessage := fmt.Sprintf("📚 過去のメッセージ履歴を取得しています... (#%s)", channelInfo.Name)
+	if err := slackClient.SendMessage(event.Event.Channel, ackMessage); err != nil {
+		log.Printf("Error sending acknowledgment message: %v", err)
+	}
+
+	// Check if Google Sheets is configured
+	if cfg.GoogleSheetsCredentials == "" || cfg.SpreadsheetID == "" {
+		configMessage := "⚠️ Google Sheetsの設定が完了していません。管理者にお問い合わせください。"
+		slackClient.SendMessage(event.Event.Channel, configMessage)
+		return nil
+	}
+
+	// Create Google Sheets client
+	sheetsClient, err := sheets.NewClient(cfg.GoogleSheetsCredentials)
+	if err != nil {
+		log.Printf("Error creating Google Sheets client: %v", err)
+		errorMessage := "❌ Google Sheetsへの接続に失敗しました。"
+		slackClient.SendMessage(event.Event.Channel, errorMessage)
+		return err
+	}
+
+	// Get channel history (limit to 100 messages to avoid overwhelming)
+	messages, err := slackClient.GetChannelHistory(event.Event.Channel, 100)
+	if err != nil {
+		log.Printf("Error getting channel history: %v", err)
+		errorMessage := "❌ チャンネル履歴の取得に失敗しました。"
+		slackClient.SendMessage(event.Event.Channel, errorMessage)
+		return err
+	}
+
+	// Filter out bot messages and process in reverse order (oldest first)
+	var validMessages []HistoryMessage
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Type == "message" && msg.User != "" && msg.Text != "" {
+			validMessages = append(validMessages, msg)
+		}
+	}
+
+	if len(validMessages) == 0 {
+		noMessagesMsg := "ℹ️ 記録するメッセージが見つかりませんでした。"
+		slackClient.SendMessage(event.Event.Channel, noMessagesMsg)
+		return nil
+	}
+
+	// Process each message with failure tracking
+	processedCount := 0
+	failureCount := 0
+	var lastError error
+
+	for _, msg := range validMessages {
+		// Get user info
+		userInfo, err := slackClient.GetUserInfo(msg.User)
+		if err != nil {
+			log.Printf("Error getting user info for %s: %v", msg.User, err)
+			userInfo = &UserInfo{ID: msg.User, Name: "Unknown"}
+		}
+
+		// Parse timestamp
+		ts, err := strconv.ParseFloat(msg.Timestamp, 64)
+		if err != nil {
+			ts = float64(time.Now().Unix())
+		}
+		timestamp := time.Unix(int64(ts), 0)
+
+		// Create message record
+		record := sheets.MessageRecord{
+			Timestamp:   timestamp,
+			Channel:     event.Event.Channel,
+			ChannelName: channelInfo.Name,
+			User:        msg.User,
+			UserName:    userInfo.Name,
+			Text:        msg.Text,
+			ThreadTS:    msg.ThreadTS,
+		}
+
+		// Write to Google Sheets
+		if err := sheetsClient.WriteMessage(cfg.SpreadsheetID, &record); err != nil {
+			log.Printf("Error writing message to sheets: %v", err)
+			failureCount++
+			lastError = err
+
+			// Check if we've exceeded the failure limit
+			if failureCount >= MaxFailureCount {
+				errorMessage := fmt.Sprintf("❌ スプレッドシートへの記録で%d回連続して失敗したため、処理を中断します。\n"+
+					"最後のエラー: %v\n"+
+					"記録済みメッセージ数: %d件\n"+
+					"管理者にお問い合わせください。", MaxFailureCount, lastError, processedCount)
+
+				if err := slackClient.SendMessage(event.Event.Channel, errorMessage); err != nil {
+					log.Printf("Error sending failure notification: %v", err)
+				}
+
+				log.Printf("Stopped processing due to %d consecutive failures. Last error: %v", MaxFailureCount, lastError)
+				return fmt.Errorf("too many failures (%d): %v", MaxFailureCount, lastError)
+			}
+			continue
+		}
+
+		// Reset failure count on success
+		failureCount = 0
+		processedCount++
+	}
+
+	// Send completion message
+	sheetURL := fmt.Sprintf("https://docs.google.com/spreadsheets/d/%s", cfg.SpreadsheetID)
+	var completionMessage string
+
+	if failureCount > 0 {
+		completionMessage = fmt.Sprintf("⚠️ 過去のメッセージ履歴の記録が完了しました（一部エラーあり）\n"+
+			"記録されたメッセージ数: %d件\n"+
+			"失敗したメッセージ数: %d件\n"+
+			"記録先: %s", processedCount, failureCount, sheetURL)
+	} else {
+		completionMessage = fmt.Sprintf("✅ 過去のメッセージ履歴の記録が完了しました！\n"+
+			"記録されたメッセージ数: %d件\n"+
+			"記録先: %s", processedCount, sheetURL)
+	}
+
+	if err := slackClient.SendMessage(event.Event.Channel, completionMessage); err != nil {
+		log.Printf("Error sending completion message: %v", err)
+	}
+
+	log.Printf("App mention processed: %d messages recorded from #%s", processedCount, channelInfo.Name)
+	return nil
+}
