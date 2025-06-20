@@ -7,9 +7,24 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"golang.org/x/term"
+)
+
+var (
+	cachedPassword string
+	passwordSet    bool
+)
+
+// ANSI color codes
+const (
+	ColorReset  = "\033[0m"
+	ColorYellow = "\033[33m"
+	ColorGreen  = "\033[32m"
+	ColorRed    = "\033[31m"
 )
 
 func main() {
@@ -95,7 +110,6 @@ func buildAndDeploy(remoteHost, remotePath, remoteUser string) {
 	}
 
 	log.Println("Deploying to remote server...")
-	log.Println("Note: You may be prompted for sudo password during service restart")
 
 	// Rsync binary to remote server
 	rsyncCmd := exec.Command("rsync", "-avz", "--delete",
@@ -123,16 +137,11 @@ func buildAndDeploy(remoteHost, remotePath, remoteUser string) {
 		}
 	}
 
-	// Start or restart service on remote server (with TTY for sudo password input)
-	serviceCmd := exec.Command("ssh", "-t", fmt.Sprintf("%s@%s", remoteUser, remoteHost),
-		fmt.Sprintf("sudo systemctl is-active slack-to-google-sheets-bot >/dev/null 2>&1 && sudo systemctl restart slack-to-google-sheets-bot || sudo systemctl start slack-to-google-sheets-bot"))
+	// Start or restart service on remote server (using cached password)
+	log.Println("Starting/restarting service...")
+	serviceCommand := "systemctl is-active slack-to-google-sheets-bot >/dev/null 2>&1 && sudo systemctl restart slack-to-google-sheets-bot || sudo systemctl start slack-to-google-sheets-bot"
 
-	// Connect stdin/stdout/stderr for interactive sudo
-	serviceCmd.Stdin = os.Stdin
-	serviceCmd.Stdout = os.Stdout
-	serviceCmd.Stderr = os.Stderr
-
-	if err := serviceCmd.Run(); err != nil {
+	if err := runSudoCommand(remoteUser, remoteHost, serviceCommand); err != nil {
 		log.Printf("Service start/restart failed: %s", err)
 		log.Printf("Check SSH connection and sudo permissions for %s@%s", remoteUser, remoteHost)
 		return
@@ -140,14 +149,9 @@ func buildAndDeploy(remoteHost, remotePath, remoteUser string) {
 
 	// Verify service is running
 	log.Println("Verifying service status...")
-	verifyCmd := exec.Command("ssh", "-t", fmt.Sprintf("%s@%s", remoteUser, remoteHost),
-		"echo 'Service status:' && sudo systemctl is-active slack-to-google-sheets-bot && echo 'Service is active' || echo 'Service is not active'")
+	verifyCommand := "systemctl is-active slack-to-google-sheets-bot && echo 'Service is active' || echo 'Service is not active'"
 
-	verifyCmd.Stdin = os.Stdin
-	verifyCmd.Stdout = os.Stdout
-	verifyCmd.Stderr = os.Stderr
-
-	if err := verifyCmd.Run(); err != nil {
+	if err := runSudoCommand(remoteUser, remoteHost, verifyCommand); err != nil {
 		log.Printf("⚠️  Could not verify service status: %s", err)
 	}
 
@@ -178,16 +182,11 @@ func deployEnvFile(remoteHost, remotePath, remoteUser, envFilePath string) {
 		return
 	}
 
-	// Start or restart service on remote server (with TTY for sudo password input)
-	serviceCmd := exec.Command("ssh", "-t", fmt.Sprintf("%s@%s", remoteUser, remoteHost),
-		fmt.Sprintf("sudo systemctl is-active slack-to-google-sheets-bot >/dev/null 2>&1 && sudo systemctl restart slack-to-google-sheets-bot || sudo systemctl start slack-to-google-sheets-bot"))
+	// Start or restart service on remote server (using cached password)
+	log.Println("Restarting service after environment file update...")
+	serviceCommand := "systemctl is-active slack-to-google-sheets-bot >/dev/null 2>&1 && systemctl restart slack-to-google-sheets-bot || systemctl start slack-to-google-sheets-bot"
 
-	// Connect stdin/stdout/stderr for interactive sudo
-	serviceCmd.Stdin = os.Stdin
-	serviceCmd.Stdout = os.Stdout
-	serviceCmd.Stderr = os.Stderr
-
-	if err := serviceCmd.Run(); err != nil {
+	if err := runSudoCommand(remoteUser, remoteHost, serviceCommand); err != nil {
 		log.Printf("Service start/restart failed: %s", err)
 		log.Printf("Check SSH connection and sudo permissions for %s@%s", remoteUser, remoteHost)
 		return
@@ -216,4 +215,57 @@ func testSSHConnection(remoteHost, remoteUser string) bool {
 
 	log.Printf("✅ SSH connection successful: %s", string(output))
 	return true
+}
+
+func getPassword(remoteUser, remoteHost string) string {
+	if passwordSet {
+		return cachedPassword
+	}
+
+	// Yellow color for password prompt
+	fmt.Printf("%sEnter sudo password for %s@%s: %s", ColorYellow, remoteUser, remoteHost, ColorReset)
+
+	// Disable echo for password input
+	fd := int(syscall.Stdin)
+	password, err := term.ReadPassword(fd)
+	if err != nil {
+		log.Printf("Failed to read password: %s", err)
+		return ""
+	}
+
+	fmt.Println() // New line after password input
+
+	cachedPassword = string(password)
+	passwordSet = true
+
+	// Green color for success message
+	fmt.Println("\033[32mPassword cached for this session\033[0m")
+	return cachedPassword
+}
+
+func runSudoCommand(remoteUser, remoteHost, command string) error {
+	password := getPassword(remoteUser, remoteHost)
+	if password == "" {
+		return fmt.Errorf("no password provided")
+	}
+
+	// Create a temporary script on remote server to handle sudo with password
+	scriptContent := fmt.Sprintf("#!/bin/bash\necho '%s' | sudo -S %s", password, command)
+
+	// Upload and execute the script
+	uploadCmd := fmt.Sprintf("cat > /tmp/sudo_script.sh << 'EOF'\n%s\nEOF", scriptContent)
+
+	// First, upload the script
+	sshCmd1 := exec.Command("ssh", fmt.Sprintf("%s@%s", remoteUser, remoteHost), uploadCmd)
+	if err := sshCmd1.Run(); err != nil {
+		return fmt.Errorf("failed to upload script: %v", err)
+	}
+
+	// Make it executable and run it
+	executeCmd := "chmod +x /tmp/sudo_script.sh && /tmp/sudo_script.sh && rm /tmp/sudo_script.sh"
+	sshCmd2 := exec.Command("ssh", fmt.Sprintf("%s@%s", remoteUser, remoteHost), executeCmd)
+	sshCmd2.Stdout = os.Stdout
+	sshCmd2.Stderr = os.Stderr
+
+	return sshCmd2.Run()
 }
