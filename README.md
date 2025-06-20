@@ -5,7 +5,9 @@ Slack app that records channel posts to Google Sheets.
 ## Requirements
 
 - Go 1.24+
-- Slack API token with `channels:history` and `chat:write` scopes
+- Slack API tokens:
+  - Bot User OAuth Token with `channels:read`, `channels:history`, `users:read`, `chat:write` scopes
+  - User OAuth Token with `search:read` scope (for efficient message history retrieval)
 - Google Sheets API credentials (Service Account)
 
 ## Setup
@@ -23,6 +25,7 @@ Slack app that records channel posts to Google Sheets.
 7. In **OAuth & Permissions**:
    - Install app to workspace
    - Copy the **Bot User OAuth Token** (starts with `xoxb-`)
+   - Copy the **User OAuth Token** (starts with `xoxp-`) for search functionality
 8. In **Basic Information**:
    - Copy the **Signing Secret**
 
@@ -74,6 +77,7 @@ Slack app that records channel posts to Google Sheets.
 2. **Fill in your credentials in `.env`**:
    ```bash
    SLACK_BOT_TOKEN=xoxb-1234567890-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx
+   SLACK_USER_TOKEN=xoxp-1234567890-1234567890123-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx
    SLACK_SIGNING_SECRET=a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
    GOOGLE_SHEETS_CREDENTIALS=./credentials.json
    GOOGLE_SPREADSHEET_ID=1abCD2efGH3ijKL4mnOP5qrST6uvWX7yzAB8CdEfGh9I
@@ -82,6 +86,7 @@ Slack app that records channel posts to Google Sheets.
 
    **Where to find these values**:
    - `SLACK_BOT_TOKEN`: From Slack app → OAuth & Permissions → Bot User OAuth Token
+   - `SLACK_USER_TOKEN`: From Slack app → OAuth & Permissions → User OAuth Token (required for search functionality)
    - `SLACK_SIGNING_SECRET`: From Slack app → Basic Information → Signing Secret
    - `GOOGLE_SHEETS_CREDENTIALS`: Path to your downloaded `credentials.json` file
    - `GOOGLE_SPREADSHEET_ID`: From your Google Sheets URL (the long ID between `/d/` and `/edit`)

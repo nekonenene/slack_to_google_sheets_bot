@@ -272,8 +272,9 @@ func handleMemberJoined(cfg *config.Config, event *Event) error {
 			return err
 		}
 
-		// Get channel history for initial recording (all messages)
-		messages, err := slackClient.GetChannelHistory(event.Event.Channel, 0)
+		// Get channel history for initial recording using search API
+		slackUserClient := NewClient(cfg.SlackUserToken)
+		messages, err := slackClient.GetChannelHistoryBySearch(event.Event.Channel, "", slackUserClient)
 		if err != nil {
 			log.Printf("Error getting channel history for initial recording: %v", err)
 			errorMessage := "❌ チャンネル履歴の取得に失敗しました。"
@@ -343,8 +344,8 @@ func handleMemberJoined(cfg *config.Config, event *Event) error {
 				records = append(records, record)
 			}
 
-			// Write all messages in batch (this ensures chronological order)
-			if err := sheetsClient.WriteBatchMessages(cfg.SpreadsheetID, records); err != nil {
+			// Write all messages using streaming approach (this ensures chronological order)
+			if err := sheetsClient.WriteMessagesStreaming(cfg.SpreadsheetID, records); err != nil {
 				log.Printf("Error writing batch messages to sheets after retries: %v", err)
 				errorMessage := fmt.Sprintf("❌ 初回記録のスプレッドシートへの記録に失敗しました（4回試行後）\n"+
 					"エラー: %v\n"+
@@ -468,8 +469,19 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 		log.Printf("Sheet reset completed for channel %s", channelInfo.Name)
 	}
 
-	// Get channel history (all messages)
-	messages, err := slackClient.GetChannelHistory(event.Event.Channel, 0)
+	// Get channel history using search API for better performance
+	// First, check if we should continue from last recorded timestamp
+	sheetName := fmt.Sprintf("%s-%s", channelInfo.Name, event.Event.Channel)
+	latestTS := ""
+	if !isResetRequest {
+		// Try to get the latest timestamp from the sheet to continue from there
+		if latestTS, err = sheetsClient.GetLatestTimestamp(cfg.SpreadsheetID, sheetName); err != nil {
+			log.Printf("Could not get latest timestamp (sheet might be new): %v", err)
+		}
+	}
+
+	slackUserClient := NewClient(cfg.SlackUserToken)
+	messages, err := slackClient.GetChannelHistoryBySearch(event.Event.Channel, latestTS, slackUserClient)
 	if err != nil {
 		log.Printf("Error getting channel history: %v", err)
 		errorMessage := "❌ チャンネル履歴の取得に失敗しました。"
@@ -535,11 +547,11 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 		records = append(records, record)
 	}
 
-	// Write all messages in batch (this ensures chronological order)
+	// Write all messages using streaming approach (this ensures chronological order)
 	var processedCount int
 	var failureCount int
 
-	if err := sheetsClient.WriteBatchMessages(cfg.SpreadsheetID, records); err != nil {
+	if err := sheetsClient.WriteMessagesStreaming(cfg.SpreadsheetID, records); err != nil {
 		log.Printf("Error writing batch messages to sheets after retries: %v", err)
 		errorMessage := fmt.Sprintf("❌ スプレッドシートへの記録に失敗しました（4回試行後）\n"+
 			"エラー: %v\n"+

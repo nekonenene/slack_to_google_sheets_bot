@@ -15,13 +15,14 @@ func main() {
 	cfg := config.Load()
 
 	// Validate required configuration
-	if cfg.SlackBotToken == "" || cfg.SlackSigningSecret == "" {
-		log.Fatal("SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET are required")
+	if cfg.SlackBotToken == "" || cfg.SlackUserToken == "" || cfg.SlackSigningSecret == "" {
+		log.Fatal("SLACK_BOT_TOKEN, SLACK_USER_TOKEN, and SLACK_SIGNING_SECRET are required")
 	}
 
 	// Log configuration status
 	log.Printf("Configuration loaded:")
 	log.Printf("  SLACK_BOT_TOKEN: %s", maskToken(cfg.SlackBotToken))
+	log.Printf("  SLACK_USER_TOKEN: %s", maskToken(cfg.SlackUserToken))
 	log.Printf("  SLACK_SIGNING_SECRET: %s", maskToken(cfg.SlackSigningSecret))
 	log.Printf("  GOOGLE_SHEETS_CREDENTIALS length: %d", len(cfg.GoogleSheetsCredentials))
 	log.Printf("  GOOGLE_SPREADSHEET_ID: %s", maskToken(cfg.SpreadsheetID))

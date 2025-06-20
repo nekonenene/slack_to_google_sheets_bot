@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -189,6 +190,122 @@ func (c *Client) GetChannelInfo(channelID string) (*ChannelInfo, error) {
 	return result, nil
 }
 
+func (c *Client) searchMessages(query string, page int) (*SearchResponse, error) {
+	var result *SearchResponse
+	err := retryWithBackoff(func() error {
+		// Rate limiting: small delay between API calls
+		time.Sleep(200 * time.Millisecond)
+
+		url := fmt.Sprintf("https://slack.com/api/search.messages?query=%s&sort=timestamp&sort_dir=asc&count=100&page=%d",
+			strings.ReplaceAll(query, " ", "%20"), page)
+
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return err
+		}
+
+		req.Header.Set("Authorization", "Bearer "+c.token)
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+
+		var searchResp SearchResponse
+		if err := json.Unmarshal(body, &searchResp); err != nil {
+			return err
+		}
+
+		if !searchResp.OK {
+			return fmt.Errorf("slack API error: %s", string(body))
+		}
+
+		result = &searchResp
+		return nil
+	}, fmt.Sprintf("search messages with query: %s", query))
+
+	return result, err
+}
+
+func (c *Client) GetChannelHistoryBySearch(channelID string, afterTS string, userTokenClient *Client) ([]HistoryMessage, error) {
+	// Get channel info to build query
+	channelInfo, err := c.GetChannelInfo(channelID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get channel info: %v", err)
+	}
+
+	// Build search query
+	query := fmt.Sprintf("in:#%s", channelInfo.Name)
+	if afterTS != "" {
+		// Convert timestamp to date format for search API
+		ts, err := strconv.ParseFloat(afterTS, 64)
+		if err == nil {
+			date := time.Unix(int64(ts), 0).Format("2006-01-02")
+			query += fmt.Sprintf(" after:%s", date)
+		}
+	}
+
+	log.Printf("Starting search-based history retrieval for channel %s with query: %s", channelID, query)
+
+	var allMessages []HistoryMessage
+	page := 1
+	maxPages := 100 // API limitation
+
+	for page <= maxPages {
+		searchResp, err := userTokenClient.searchMessages(query, page)
+		if err != nil {
+			return nil, fmt.Errorf("search failed on page %d: %v", page, err)
+		}
+
+		if len(searchResp.Messages.Matches) == 0 {
+			log.Printf("No more messages found on page %d", page)
+			break
+		}
+
+		// Convert SearchMessage to HistoryMessage and filter by channel
+		var pageMessages []HistoryMessage
+		for _, msg := range searchResp.Messages.Matches {
+			// Only include messages from the target channel
+			if msg.Channel.ID == channelID && msg.Type == "message" && msg.User != "" && msg.Text != "" {
+				historyMsg := HistoryMessage{
+					Type:      msg.Type,
+					User:      msg.User,
+					Text:      msg.Text,
+					Timestamp: msg.Timestamp,
+					ThreadTS:  msg.ThreadTS,
+				}
+				pageMessages = append(pageMessages, historyMsg)
+			}
+		}
+
+		allMessages = append(allMessages, pageMessages...)
+		log.Printf("Retrieved %d messages from page %d (total so far: %d)",
+			len(pageMessages), page, len(allMessages))
+
+		// Check if we've reached the end
+		if page >= searchResp.Messages.Paging.Pages {
+			log.Printf("Reached final page %d of %d", page, searchResp.Messages.Paging.Pages)
+			break
+		}
+
+		page++
+	}
+
+	// Sort by timestamp to ensure chronological order (search API should already return sorted, but let's be sure)
+	sort.Slice(allMessages, func(i, j int) bool {
+		return allMessages[i].Timestamp < allMessages[j].Timestamp
+	})
+
+	log.Printf("Search-based retrieval completed: %d total messages from channel %s", len(allMessages), channelID)
+	return allMessages, nil
+}
+
 func (c *Client) SendMessage(channel, text string) error {
 	return retryWithBackoff(func() error {
 		url := "https://slack.com/api/chat.postMessage"
@@ -252,6 +369,31 @@ type HistoryMessage struct {
 	Text      string `json:"text"`
 	Timestamp string `json:"ts"`
 	ThreadTS  string `json:"thread_ts,omitempty"`
+}
+
+type SearchResponse struct {
+	OK       bool `json:"ok"`
+	Messages struct {
+		Matches []SearchMessage `json:"matches"`
+		Paging  struct {
+			Count int `json:"count"`
+			Total int `json:"total"`
+			Page  int `json:"page"`
+			Pages int `json:"pages"`
+		} `json:"paging"`
+	} `json:"messages"`
+}
+
+type SearchMessage struct {
+	Type      string `json:"type"`
+	User      string `json:"user"`
+	Text      string `json:"text"`
+	Timestamp string `json:"ts"`
+	ThreadTS  string `json:"thread_ts,omitempty"`
+	Channel   struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"channel"`
 }
 
 func (c *Client) GetChannelHistory(channelID string, limit int) ([]HistoryMessage, error) {

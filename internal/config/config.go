@@ -9,6 +9,7 @@ import (
 
 type Config struct {
 	SlackBotToken           string
+	SlackUserToken          string
 	SlackSigningSecret      string
 	GoogleSheetsCredentials string
 	SpreadsheetID           string
@@ -23,6 +24,7 @@ func Load() *Config {
 
 	return &Config{
 		SlackBotToken:           os.Getenv("SLACK_BOT_TOKEN"),
+		SlackUserToken:          os.Getenv("SLACK_USER_TOKEN"),
 		SlackSigningSecret:      os.Getenv("SLACK_SIGNING_SECRET"),
 		GoogleSheetsCredentials: os.Getenv("GOOGLE_SHEETS_CREDENTIALS"),
 		SpreadsheetID:           os.Getenv("GOOGLE_SPREADSHEET_ID"),
