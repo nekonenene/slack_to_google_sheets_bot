@@ -12,8 +12,6 @@ Slack app that records channel posts to Google Sheets.
 
 ### 1. Slack API Setup
 
-#### Option A: Using App Manifest (Recommended)
-
 1. Go to [Slack API Dashboard](https://api.slack.com/apps)
 2. Click "Create New App" → "From an app manifest"
 3. Select your workspace
@@ -22,51 +20,72 @@ Slack app that records channel posts to Google Sheets.
    - **For remote server**: `http://your-server-ip:55999/slack/events`
    - **For ngrok**: `https://your-ngrok-url.ngrok.io/slack/events`
 6. Create the app
-7. Install the app to your workspace
-8. Copy the **Bot User OAuth Token** and **Signing Secret**
-
-#### Option B: Manual Setup
-
-1. Go to [Slack API Dashboard](https://api.slack.com/apps)
-2. Click "Create New App" → "From scratch"
-3. Enter app name and select workspace
-4. In **OAuth & Permissions**:
-   - Add Bot Token Scopes: `channels:history`, `channels:read`, `chat:write`, `groups:history`, `groups:read`, `im:history`, `im:read`, `mpim:history`, `mpim:read`
+7. In **OAuth & Permissions**:
    - Install app to workspace
    - Copy the **Bot User OAuth Token** (starts with `xoxb-`)
-5. In **Basic Information**:
+8. In **Basic Information**:
    - Copy the **Signing Secret**
-6. In **Event Subscriptions**:
-   - Enable Events
-   - Set Request URL to your server endpoint `/slack/events`
-   - Subscribe to bot events: `member_joined_channel`, `message.channels`, `message.groups`, `message.im`, `message.mpim`
 
 ### 2. Google Sheets API Setup
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project or select existing one
-3. Enable the **Google Sheets API**
-4. Create credentials:
-   - Go to **Credentials** → **Create Credentials** → **Service Account**
-   - Download the JSON key file
-   - Share your target spreadsheet with the service account email
-5. Create a new Google Spreadsheet and copy its ID from the URL
+1. **Setup Google Cloud Project**:
+   - Go to [Google Cloud Console](https://console.cloud.google.com/)
+   - Create a new project or select existing one
+   - In the top navigation, make sure your project is selected
+
+2. **Enable Google Sheets API**:
+   - Go to **APIs & Services** → **Library**
+   - Search for "Google Sheets API"
+   - Click on it and press **Enable**
+
+3. **Create Service Account**:
+   - Go to **APIs & Services** → **Credentials**
+   - Click **Create Credentials** → **Service Account**
+   - Enter a name (e.g., "slack-sheets-bot")
+   - Click **Create and Continue**
+   - Skip role assignment (click **Continue**)
+   - Click **Done**
+
+4. **Download credentials.json**:
+   - In the **Credentials** page, find your service account
+   - Click on the service account email
+   - Go to **Keys** tab
+   - Click **Add Key** → **Create new key**
+   - Select **JSON** format
+   - Click **Create** - the `credentials.json` file will download automatically
+
+5. **Setup Google Spreadsheet**:
+   - Create a new Google Spreadsheet
+   - Copy the spreadsheet ID from the URL:
+     - URL: `https://docs.google.com/spreadsheets/d/SPREADSHEET_ID/edit`
+     - Copy the `SPREADSHEET_ID` part
+   - **Important**: Share the spreadsheet with the service account:
+     - Click **Share** in your spreadsheet
+     - Add the service account email (found in `credentials.json` as `client_email`)
+     - Give it **Editor** permissions
 
 ### 3. Environment Setup
 
-1. Copy environment template:
+1. **Copy environment template**:
    ```bash
    cp .env.example .env
    ```
 
-2. Fill in your credentials in `.env`:
+2. **Fill in your credentials in `.env`**:
    ```bash
-   SLACK_BOT_TOKEN=xoxb-your-bot-token
-   SLACK_SIGNING_SECRET=your-signing-secret
-   GOOGLE_SHEETS_CREDENTIALS=path/to/service-account.json
-   SPREADSHEET_ID=your-spreadsheet-id
+   SLACK_BOT_TOKEN=xoxb-1234567890-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx
+   SLACK_SIGNING_SECRET=a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
+   GOOGLE_SHEETS_CREDENTIALS=./credentials.json
+   SPREADSHEET_ID=1abCD2efGH3ijKL4mnOP5qrST6uvWX7yzAB8CdEfGh9I
    PORT=55999
    ```
+
+   **Where to find these values**:
+   - `SLACK_BOT_TOKEN`: From Slack app → OAuth & Permissions → Bot User OAuth Token
+   - `SLACK_SIGNING_SECRET`: From Slack app → Basic Information → Signing Secret
+   - `GOOGLE_SHEETS_CREDENTIALS`: Path to your downloaded `credentials.json` file
+   - `SPREADSHEET_ID`: From your Google Sheets URL (the long ID between `/d/` and `/edit`)
+   - `PORT`: The port your server will run on (55999 is recommended)
 
 ### 4. Development Setup
 
@@ -184,3 +203,29 @@ ngrok http 55999
 # Update your Slack app's Event Subscriptions URL to:
 # https://your-ngrok-url.ngrok.io/slack/events
 ```
+
+## Troubleshooting
+
+### Google Sheets API Issues
+
+**Error: "The caller does not have permission"**
+- Make sure you shared the spreadsheet with the service account email
+- The email is found in `credentials.json` as `client_email`
+- Give the service account **Editor** permissions
+
+**Error: "File not found" for credentials.json**
+- Check the path in `GOOGLE_SHEETS_CREDENTIALS` environment variable
+- Make sure the file exists and is readable
+- Use relative path like `./credentials.json` or absolute path
+
+### Slack API Issues
+
+**Event URL verification failed**
+- Make sure your server is accessible from the internet
+- Check that the port (55999) is open in your firewall/security group
+- Verify the URL format: `http://your-server-ip:55999/slack/events`
+
+**Bot doesn't respond to events**
+- Check that the bot is added to the channel
+- Verify bot token starts with `xoxb-`
+- Check application logs for error messages
