@@ -10,6 +10,16 @@ help:
 	@echo "  vet     - Run go vet"
 	@echo "  deps    - Download dependencies"
 
+.PHONY: init
+init:
+	go mod tidy
+	cp .env.example .env
+
+# Download dependencies
+.PHONY: deps
+deps:
+	go mod tidy
+
 # Run the application
 .PHONY: run
 run:
@@ -20,15 +30,10 @@ run:
 build:
 	go build -o build/slack-to-google-sheets-bot main.go
 
-# Run tests
-.PHONY: test
-test:
-	go test ./...
-
 # Clean build artifacts
 .PHONY: clean
 clean:
-	rm -rf bin/
+	rm -rf build/
 
 # Format code
 .PHONY: fmt
@@ -40,7 +45,7 @@ fmt:
 vet:
 	go vet ./...
 
-# Download dependencies
-.PHONY: deps
-deps:
-	go mod tidy
+# Run tests
+.PHONY: test
+test:
+	go test ./...
