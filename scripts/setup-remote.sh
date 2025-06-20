@@ -41,14 +41,12 @@ echo "✅ Required files found"
 
 # Step 1: Create deployment configuration
 echo "📝 Creating deployment configuration..."
-if [ ! -f "deploy.env" ]; then
-    cp deploy.env.example deploy.env
-    sed -i "s/REMOTE_HOST=server-hostname/REMOTE_HOST=$REMOTE_HOST/" deploy.env
-    sed -i "s/REMOTE_USER=server-username/REMOTE_USER=$REMOTE_USER/" deploy.env
-    echo "✅ deploy.env created and configured"
-else
-    echo "⚠️  deploy.env already exists, skipping creation"
-fi
+cp -f deploy.env.example deploy.env
+sed -i "" "s|REMOTE_HOST=server-hostname|REMOTE_HOST=$REMOTE_HOST|g" deploy.env
+sed -i "" "s|REMOTE_USER=server-username|REMOTE_USER=$REMOTE_USER|g" deploy.env
+echo "✅ deploy.env created and configured"
+echo "Configuration:"
+cat deploy.env
 
 # Step 2: Setup remote server
 echo "🔧 Setting up remote server..."

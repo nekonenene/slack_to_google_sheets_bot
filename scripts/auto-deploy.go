@@ -47,6 +47,11 @@ func main() {
 		}
 	}
 
+	// Test SSH connection first
+	if !testSSHConnection(remoteHost, remoteUser) {
+		log.Fatal("SSH connection test failed. Please check your connection and try again.")
+	}
+
 	// Initial build and deploy
 	buildAndDeploy(remoteHost, remotePath, remoteUser)
 
@@ -96,8 +101,12 @@ func buildAndDeploy(remoteHost, remotePath, remoteUser string) {
 		"build/slack-to-google-sheets-bot",
 		fmt.Sprintf("%s@%s:%s/", remoteUser, remoteHost, remotePath))
 
-	if err := rsyncCmd.Run(); err != nil {
+	// Capture both stdout and stderr
+	output, err := rsyncCmd.CombinedOutput()
+	if err != nil {
 		log.Printf("Deploy failed: %s", err)
+		log.Printf("Rsync output: %s", string(output))
+		log.Printf("Check SSH connection to %s@%s", remoteUser, remoteHost)
 		return
 	}
 
@@ -117,8 +126,12 @@ func buildAndDeploy(remoteHost, remotePath, remoteUser string) {
 	restartCmd := exec.Command("ssh", fmt.Sprintf("%s@%s", remoteUser, remoteHost),
 		fmt.Sprintf("sudo systemctl restart slack-to-google-sheets-bot || %s/slack-to-google-sheets-bot &", remotePath))
 
-	if err := restartCmd.Run(); err != nil {
+	// Capture both stdout and stderr
+	restartOutput, err := restartCmd.CombinedOutput()
+	if err != nil {
 		log.Printf("Restart failed: %s", err)
+		log.Printf("SSH output: %s", string(restartOutput))
+		log.Printf("Check SSH connection and sudo permissions for %s@%s", remoteUser, remoteHost)
 		return
 	}
 
@@ -139,8 +152,12 @@ func deployEnvFile(remoteHost, remotePath, remoteUser, envFilePath string) {
 		envFilePath,
 		fmt.Sprintf("%s@%s:%s/", remoteUser, remoteHost, remotePath))
 
-	if err := rsyncCmd.Run(); err != nil {
+	// Capture both stdout and stderr
+	output, err := rsyncCmd.CombinedOutput()
+	if err != nil {
 		log.Printf("Environment file deploy failed: %s", err)
+		log.Printf("Rsync output: %s", string(output))
+		log.Printf("Check SSH connection to %s@%s", remoteUser, remoteHost)
 		return
 	}
 
@@ -148,10 +165,36 @@ func deployEnvFile(remoteHost, remotePath, remoteUser, envFilePath string) {
 	restartCmd := exec.Command("ssh", fmt.Sprintf("%s@%s", remoteUser, remoteHost),
 		fmt.Sprintf("sudo systemctl restart slack-to-google-sheets-bot || %s/slack-to-google-sheets-bot &", remotePath))
 
-	if err := restartCmd.Run(); err != nil {
+	// Capture both stdout and stderr
+	restartOutput, err := restartCmd.CombinedOutput()
+	if err != nil {
 		log.Printf("Service restart failed: %s", err)
+		log.Printf("SSH output: %s", string(restartOutput))
+		log.Printf("Check SSH connection and sudo permissions for %s@%s", remoteUser, remoteHost)
 		return
 	}
 
 	log.Println("✅ Environment file deployed and service restarted")
+}
+
+func testSSHConnection(remoteHost, remoteUser string) bool {
+	log.Printf("Testing SSH connection to %s@%s...", remoteUser, remoteHost)
+
+	testCmd := exec.Command("ssh", "-o", "ConnectTimeout=10", "-o", "BatchMode=yes",
+		fmt.Sprintf("%s@%s", remoteUser, remoteHost), "echo 'SSH connection test successful'")
+
+	output, err := testCmd.CombinedOutput()
+	if err != nil {
+		log.Printf("❌ SSH connection failed: %s", err)
+		log.Printf("SSH output: %s", string(output))
+		log.Printf("Troubleshooting tips:")
+		log.Printf("  1. Check if SSH key is properly configured")
+		log.Printf("  2. Try manual SSH: ssh %s@%s", remoteUser, remoteHost)
+		log.Printf("  3. Check if the remote host is reachable: ping %s", remoteHost)
+		log.Printf("  4. Verify deploy.env has correct REMOTE_HOST and REMOTE_USER")
+		return false
+	}
+
+	log.Printf("✅ SSH connection successful: %s", string(output))
+	return true
 }
