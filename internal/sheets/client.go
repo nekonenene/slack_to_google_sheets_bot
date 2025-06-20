@@ -29,6 +29,19 @@ type Client struct {
 	service *sheets.Service
 }
 
+// NewClient creates a new Google Sheets API client using service account credentials.
+//
+// Args:
+//   - credentialsJSON: Either a file path to credentials.json or the JSON content itself
+//
+// Returns:
+//   - *Client: Initialized Google Sheets client with retry logic
+//   - error: Authentication error or invalid credentials
+//
+// Example:
+//   client, err := NewClient("./credentials.json")
+//   // or
+//   client, err := NewClient(`{"type":"service_account",...}`)
 func NewClient(credentialsJSON string) (*Client, error) {
 	ctx := context.Background()
 
@@ -106,6 +119,19 @@ type MessageRecord struct {
 	MessageTS    string
 }
 
+// WriteMessage writes a single message record to Google Sheets with optimized API usage.
+// Uses single-read operation for efficiency and handles header validation.
+//
+// Args:
+//   - spreadsheetID: Google Sheets spreadsheet ID
+//   - record: Message record containing all fields to write
+//
+// Returns:
+//   - error: Sheets API error or network failure after 4 retry attempts
+//
+// Example:
+//   record := &MessageRecord{Timestamp: time.Now(), Text: "Hello", ...}
+//   err := client.WriteMessage("1abc123...", record)
 func (c *Client) WriteMessage(spreadsheetID string, record *MessageRecord) error {
 	// Determine sheet name: "ChannelName-ChannelID"
 	sheetName := fmt.Sprintf("%s-%s", record.ChannelName, record.Channel)
@@ -580,6 +606,19 @@ func (c *Client) GetLatestTimestamp(spreadsheetID, sheetName string) (string, er
 	return latestTS, nil
 }
 
+// WriteMessagesStreaming writes multiple message records to Google Sheets efficiently.
+// Filters duplicates, sorts by timestamp, and writes in batches for optimal performance.
+//
+// Args:
+//   - spreadsheetID: Google Sheets spreadsheet ID
+//   - records: Slice of message records to write
+//
+// Returns:
+//   - error: Sheets API error or network failure after 4 retry attempts
+//
+// Example:
+//   records := []*MessageRecord{record1, record2, record3}
+//   err := client.WriteMessagesStreaming("1abc123...", records)
 func (c *Client) WriteMessagesStreaming(spreadsheetID string, records []*MessageRecord) error {
 	if len(records) == 0 {
 		return nil

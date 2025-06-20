@@ -41,6 +41,13 @@ type ChannelResponse struct {
 	Channel ChannelInfo `json:"channel"`
 }
 
+// NewClient creates a new Slack API client with the provided token.
+//
+// Args:
+//   - token: Slack Bot User OAuth Token (xoxb-) for API authentication
+//
+// Returns:
+//   - *Client: Initialized Slack client with rate limiting and caching
 func NewClient(token string) *Client {
 	return &Client{
 		token:        token,
@@ -82,6 +89,14 @@ func retryWithBackoff(operation func() error, description string) error {
 	return lastErr
 }
 
+// GetUserInfo retrieves user information from Slack API with caching and retry logic.
+//
+// Args:
+//   - userID: Slack user ID (e.g., "U123456789")
+//
+// Returns:
+//   - *UserInfo: User information including display name and real name
+//   - error: API error or network failure after 4 retry attempts
 func (c *Client) GetUserInfo(userID string) (*UserInfo, error) {
 	// Check cache first
 	if user, exists := c.userCache[userID]; exists {
@@ -136,6 +151,14 @@ func (c *Client) GetUserInfo(userID string) (*UserInfo, error) {
 	return result, nil
 }
 
+// GetChannelInfo retrieves channel information from Slack API with caching and retry logic.
+//
+// Args:
+//   - channelID: Slack channel ID (e.g., "C123456789")
+//
+// Returns:
+//   - *ChannelInfo: Channel information including name and ID
+//   - error: API error or network failure after 4 retry attempts
 func (c *Client) GetChannelInfo(channelID string) (*ChannelInfo, error) {
 	// Check cache first
 	if channel, exists := c.channelCache[channelID]; exists {
@@ -190,6 +213,16 @@ func (c *Client) GetChannelInfo(channelID string) (*ChannelInfo, error) {
 	return result, nil
 }
 
+// searchMessages performs Slack message search using search.messages API with retry logic.
+// Requires User OAuth Token with search:read scope.
+//
+// Args:
+//   - query: Search query string (e.g., "in:#general after:2023-01-01")
+//   - page: Page number for pagination (1-based, max 100)
+//
+// Returns:
+//   - *SearchResponse: Search results with messages and pagination info
+//   - error: API error or network failure after 4 retry attempts
 func (c *Client) searchMessages(query string, page int) (*SearchResponse, error) {
 	var result *SearchResponse
 	err := retryWithBackoff(func() error {
@@ -233,6 +266,20 @@ func (c *Client) searchMessages(query string, page int) (*SearchResponse, error)
 	return result, err
 }
 
+// GetChannelHistoryBySearch retrieves channel message history using search.messages API.
+// This method efficiently fetches all messages including thread replies in chronological order.
+//
+// Args:
+//   - channelID: Slack channel ID (e.g., "C123456789")
+//   - afterTS: Timestamp to start from (empty string for all history)
+//   - userTokenClient: Slack client with User OAuth Token for search:read scope
+//
+// Returns:
+//   - []HistoryMessage: All messages sorted by timestamp (oldest first)
+//   - error: API error, network failure, or search quota exceeded
+//
+// Example:
+//   messages, err := client.GetChannelHistoryBySearch("C123456789", "", userClient)
 func (c *Client) GetChannelHistoryBySearch(channelID string, afterTS string, userTokenClient *Client) ([]HistoryMessage, error) {
 	// Get channel info to build query
 	channelInfo, err := c.GetChannelInfo(channelID)
@@ -306,6 +353,17 @@ func (c *Client) GetChannelHistoryBySearch(channelID string, afterTS string, use
 	return allMessages, nil
 }
 
+// SendMessage sends a message to a Slack channel with retry logic.
+//
+// Args:
+//   - channel: Channel ID (e.g., "C123456789") or name (e.g., "#general")
+//   - text: Message text content
+//
+// Returns:
+//   - error: API error or network failure after 4 retry attempts
+//
+// Example:
+//   err := client.SendMessage("C123456789", "Hello, world!")
 func (c *Client) SendMessage(channel, text string) error {
 	return retryWithBackoff(func() error {
 		url := "https://slack.com/api/chat.postMessage"
@@ -352,7 +410,6 @@ func (c *Client) SendMessage(channel, text string) error {
 	}, fmt.Sprintf("send message to channel %s", channel))
 }
 
-
 type HistoryMessage struct {
 	Type      string `json:"type"`
 	User      string `json:"user"`
@@ -386,7 +443,18 @@ type SearchMessage struct {
 	} `json:"channel"`
 }
 
-
+// FormatMessageText converts Slack-specific formatting to human-readable text.
+// Replaces user mentions (<@U123>) with @username and channel mentions with #channelname.
+//
+// Args:
+//   - text: Raw message text from Slack API
+//
+// Returns:
+//   - string: Formatted text with resolved mentions
+//
+// Example:
+//   formatted := client.FormatMessageText("Hello <@U123456>!")
+//   // Result: "Hello @username!"
 func (c *Client) FormatMessageText(text string) string {
 	// Convert user mentions: <@U123456> -> @username
 	userMentionRe := regexp.MustCompile(`<@([UW][A-Z0-9]+)>`)
