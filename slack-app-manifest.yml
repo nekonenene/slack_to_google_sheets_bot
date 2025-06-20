@@ -1,0 +1,32 @@
+display_information:
+  name: Slack to Google Sheets Bot
+  description: Records channel posts to Google Sheets
+  background_color: "#4a90e2"
+features:
+  bot_user:
+    display_name: Sheets Bot
+    always_online: false
+oauth_config:
+  scopes:
+    bot:
+      - channels:history
+      - channels:read
+      - chat:write
+      - groups:history
+      - groups:read
+      - im:history
+      - im:read
+      - mpim:history
+      - mpim:read
+settings:
+  event_subscriptions:
+    request_url: http://your-server-ip:55999/slack/events
+    bot_events:
+      - member_joined_channel
+      - message.channels
+      - message.groups
+      - message.im
+      - message.mpim
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
