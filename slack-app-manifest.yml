@@ -4,7 +4,7 @@ display_information:
   background_color: "#4a90e2"
 features:
   bot_user:
-    display_name: Sheets Bot
+    display_name: SheetsRecorder
     always_online: false
 oauth_config:
   scopes:

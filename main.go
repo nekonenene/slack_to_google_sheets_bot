@@ -18,13 +18,13 @@ func main() {
 	if cfg.SlackBotToken == "" || cfg.SlackSigningSecret == "" {
 		log.Fatal("SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET are required")
 	}
-	
+
 	// Log configuration status
 	log.Printf("Configuration loaded:")
 	log.Printf("  SLACK_BOT_TOKEN: %s", maskToken(cfg.SlackBotToken))
 	log.Printf("  SLACK_SIGNING_SECRET: %s", maskToken(cfg.SlackSigningSecret))
 	log.Printf("  GOOGLE_SHEETS_CREDENTIALS length: %d", len(cfg.GoogleSheetsCredentials))
-	log.Printf("  GOOGLE_SPREADSHEET_ID: %s", cfg.SpreadsheetID)
+	log.Printf("  GOOGLE_SPREADSHEET_ID: %s", maskToken(cfg.SpreadsheetID))
 	log.Printf("  PORT: %s", cfg.Port)
 
 	// Health check endpoint

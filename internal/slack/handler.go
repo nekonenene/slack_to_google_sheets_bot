@@ -5,6 +5,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"slack-to-google-sheets-bot/internal/config"
@@ -15,7 +16,16 @@ const (
 	MaxFailureCount = 3
 )
 
+var (
+	processingEvents = make(map[string]bool)
+	processingMutex  = sync.Mutex{}
+)
+
 func HandleEvent(cfg *config.Config, event *Event) error {
+	// Log all incoming events for debugging
+	log.Printf("Received event: type=%s, user=%s, text=%s, timestamp=%s",
+		event.Event.Type, event.Event.User, event.Event.Text, event.Event.Timestamp)
+
 	// Handle member joined channel event
 	if event.Event.Type == "member_joined_channel" {
 		return handleMemberJoined(cfg, event)
@@ -23,11 +33,34 @@ func HandleEvent(cfg *config.Config, event *Event) error {
 
 	// Handle app mention event
 	if event.Event.Type == "app_mention" {
+		log.Printf("Processing app_mention event for timestamp: %s", event.Event.Timestamp)
+
+		// Create unique key for this app mention event
+		eventKey := fmt.Sprintf("app_mention_%s_%s", event.Event.Channel, event.Event.Timestamp)
+
+		// Check if already processing this event
+		processingMutex.Lock()
+		if processingEvents[eventKey] {
+			processingMutex.Unlock()
+			log.Printf("Already processing app_mention for timestamp %s, skipping", event.Event.Timestamp)
+			return nil
+		}
+		processingEvents[eventKey] = true
+		processingMutex.Unlock()
+
+		// Clean up after processing
+		defer func() {
+			processingMutex.Lock()
+			delete(processingEvents, eventKey)
+			processingMutex.Unlock()
+		}()
+
 		return handleAppMention(cfg, event)
 	}
 
 	// Only handle message events
 	if event.Event.Type != "message" {
+		log.Printf("Ignoring event type: %s", event.Event.Type)
 		return nil
 	}
 
@@ -36,21 +69,34 @@ func HandleEvent(cfg *config.Config, event *Event) error {
 		return nil
 	}
 
+	// Skip messages that are app mentions to avoid duplicate processing
+	// (app_mention events are already handled above)
+	// We'll use a simpler approach: if this message event has the same timestamp as an app_mention,
+	// we skip it. For now, we'll skip any message with bot mentions.
+	if strings.Contains(event.Event.Text, "<@") {
+		log.Printf("Skipping message event that contains mentions to avoid duplicate processing")
+		return nil
+	}
+
 	// Create Slack client
 	slackClient := NewClient(cfg.SlackBotToken)
-
-	// Get user information
-	userInfo, err := slackClient.GetUserInfo(event.Event.User)
-	if err != nil {
-		log.Printf("Error getting user info: %v", err)
-		userInfo = &UserInfo{ID: event.Event.User, Name: "Unknown", RealName: "Unknown"}
-	}
 
 	// Get channel information
 	channelInfo, err := slackClient.GetChannelInfo(event.Event.Channel)
 	if err != nil {
 		log.Printf("Error getting channel info: %v", err)
 		channelInfo = &ChannelInfo{ID: event.Event.Channel, Name: "Unknown"}
+	}
+
+	return recordSingleMessage(cfg, slackClient, event, channelInfo)
+}
+
+func recordSingleMessage(cfg *config.Config, slackClient *Client, event *Event, channelInfo *ChannelInfo) error {
+	// Get user information
+	userInfo, err := slackClient.GetUserInfo(event.Event.User)
+	if err != nil {
+		log.Printf("Error getting user info: %v", err)
+		userInfo = &UserInfo{ID: event.Event.User, Name: "Unknown", RealName: "Unknown"}
 	}
 
 	// Parse timestamp
@@ -91,7 +137,6 @@ func HandleEvent(cfg *config.Config, event *Event) error {
 			log.Printf("Is it a file path? Contains '.json': %t", strings.Contains(cfg.GoogleSheetsCredentials, ".json"))
 
 			// Send error notification to Slack
-			slackClient := NewClient(cfg.SlackBotToken)
 			errorMessage := fmt.Sprintf("❌ Google Sheetsへの接続に失敗しました。\n"+
 				"エラー: %v\n"+
 				"管理者にお問い合わせください。", err)
@@ -106,7 +151,6 @@ func HandleEvent(cfg *config.Config, event *Event) error {
 			log.Printf("Error writing to Google Sheets: %v", err)
 
 			// Send error notification to Slack for individual message failures
-			slackClient := NewClient(cfg.SlackBotToken)
 			errorMessage := fmt.Sprintf("⚠️ メッセージの記録に失敗しました。\n"+
 				"エラー: %v\n"+
 				"管理者にお問い合わせください。", err)
@@ -192,6 +236,11 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 		channelInfo = &ChannelInfo{ID: event.Event.Channel, Name: "Unknown"}
 	}
 
+	// First, record the mention message itself
+	if err := recordSingleMessage(cfg, slackClient, event, channelInfo); err != nil {
+		log.Printf("Error recording mention message: %v", err)
+	}
+
 	// Send acknowledgment message
 	ackMessage := fmt.Sprintf("📚 過去のメッセージ履歴を取得しています... (#%s)", channelInfo.Name)
 	if err := slackClient.SendMessage(event.Event.Channel, ackMessage); err != nil {
@@ -243,7 +292,14 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 	failureCount := 0
 	var lastError error
 
-	for _, msg := range validMessages {
+	log.Printf("Starting to process %d messages for channel %s", len(validMessages), channelInfo.Name)
+
+	for i, msg := range validMessages {
+		previewText := msg.Text
+		if len(previewText) > 50 {
+			previewText = previewText[:50] + "..."
+		}
+		log.Printf("Processing message %d/%d: %s", i+1, len(validMessages), previewText)
 		// Get user info
 		userInfo, err := slackClient.GetUserInfo(msg.User)
 		if err != nil {
