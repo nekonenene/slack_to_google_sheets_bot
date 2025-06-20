@@ -465,3 +465,50 @@ func (c *Client) findThreadParentNoInData(sheetData *sheets.ValueRange, threadTS
 	}
 	return 0
 }
+
+func (c *Client) ClearSheetData(spreadsheetID, sheetName string) error {
+	// Get sheet properties to find the sheet ID
+	spreadsheet, err := c.service.Spreadsheets.Get(spreadsheetID).Do()
+	if err != nil {
+		return fmt.Errorf("unable to get spreadsheet: %v", err)
+	}
+
+	var sheetID int64
+	found := false
+	for _, sheet := range spreadsheet.Sheets {
+		if sheet.Properties.Title == sheetName {
+			sheetID = sheet.Properties.SheetId
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return fmt.Errorf("sheet %s not found", sheetName)
+	}
+
+	// Clear all data except headers (row 2 onwards)
+	requests := []*sheets.Request{
+		{
+			DeleteDimension: &sheets.DeleteDimensionRequest{
+				Range: &sheets.DimensionRange{
+					SheetId:    sheetID,
+					Dimension:  "ROWS",
+					StartIndex: 1, // Start from row 2 (0-indexed, so 1 = row 2)
+				},
+			},
+		},
+	}
+
+	batchUpdateRequest := &sheets.BatchUpdateSpreadsheetRequest{
+		Requests: requests,
+	}
+
+	_, err = c.service.Spreadsheets.BatchUpdate(spreadsheetID, batchUpdateRequest).Do()
+	if err != nil {
+		return fmt.Errorf("unable to clear sheet data: %v", err)
+	}
+
+	log.Printf("Cleared all data from sheet %s (keeping headers)", sheetName)
+	return nil
+}

@@ -17,11 +17,11 @@ const (
 )
 
 var (
-	processingEvents     = make(map[string]bool)
-	processingMutex      = sync.Mutex{}
-	recentMentions       = make(map[string]time.Time)
-	recentMutex          = sync.Mutex{}
-	recentMemberJoins    = make(map[string]time.Time)
+	processingEvents      = make(map[string]bool)
+	processingMutex       = sync.Mutex{}
+	recentMentions        = make(map[string]time.Time)
+	recentMutex           = sync.Mutex{}
+	recentMemberJoins     = make(map[string]time.Time)
 	recentMemberJoinMutex = sync.Mutex{}
 )
 
@@ -414,13 +414,21 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 		channelInfo = &ChannelInfo{ID: event.Event.Channel, Name: "Unknown"}
 	}
 
+	// Check if this is a reset request
+	isResetRequest := strings.Contains(strings.ToLower(event.Event.Text), "reset")
+
 	// First, record the mention message itself
 	if err := recordSingleMessage(cfg, slackClient, event, channelInfo); err != nil {
 		log.Printf("Error recording mention message: %v", err)
 	}
 
 	// Send acknowledgment message
-	ackMessage := fmt.Sprintf("📚 過去のメッセージ履歴を取得しています... (#%s)", channelInfo.Name)
+	var ackMessage string
+	if isResetRequest {
+		ackMessage = fmt.Sprintf("🔄 シートをリセットして過去のメッセージ履歴を再取得しています... (#%s)", channelInfo.Name)
+	} else {
+		ackMessage = fmt.Sprintf("📚 過去のメッセージ履歴を取得しています... (#%s)", channelInfo.Name)
+	}
 	if err := slackClient.SendMessage(event.Event.Channel, ackMessage); err != nil {
 		log.Printf("Error sending acknowledgment message: %v", err)
 	}
@@ -439,6 +447,34 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 		errorMessage := "❌ Google Sheetsへの接続に失敗しました。"
 		slackClient.SendMessage(event.Event.Channel, errorMessage)
 		return err
+	}
+
+	// Handle reset request
+	if isResetRequest {
+		sheetName := fmt.Sprintf("%s-%s", channelInfo.Name, event.Event.Channel)
+
+		// Ensure the sheet exists first
+		if err := sheetsClient.EnsureChannelSheetExists(cfg.SpreadsheetID, event.Event.Channel, channelInfo.Name); err != nil {
+			log.Printf("Error ensuring sheet exists for reset: %v", err)
+			errorMessage := "❌ シートの確認に失敗しました。"
+			slackClient.SendMessage(event.Event.Channel, errorMessage)
+			return err
+		}
+
+		// Clear existing data
+		if err := sheetsClient.ClearSheetData(cfg.SpreadsheetID, sheetName); err != nil {
+			log.Printf("Error clearing sheet data: %v", err)
+			errorMessage := "❌ シートのクリアに失敗しました。"
+			slackClient.SendMessage(event.Event.Channel, errorMessage)
+			return err
+		}
+
+		resetMessage := fmt.Sprintf("✅ シートをリセットしました。全履歴を再取得します...")
+		if err := slackClient.SendMessage(event.Event.Channel, resetMessage); err != nil {
+			log.Printf("Error sending reset confirmation: %v", err)
+		}
+
+		log.Printf("Sheet reset completed for channel %s", channelInfo.Name)
 	}
 
 	// Get channel history (all messages)
@@ -534,15 +570,28 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 	sheetURL := fmt.Sprintf("https://docs.google.com/spreadsheets/d/%s", cfg.SpreadsheetID)
 	var completionMessage string
 
-	if failureCount > 0 {
-		completionMessage = fmt.Sprintf("⚠️ 過去のメッセージ履歴の記録が完了しました（一部エラーあり）\n"+
-			"記録されたメッセージ数: %d件\n"+
-			"失敗したメッセージ数: %d件\n"+
-			"記録先: %s", processedCount, failureCount, sheetURL)
+	if isResetRequest {
+		if failureCount > 0 {
+			completionMessage = fmt.Sprintf("⚠️ シートリセット後の履歴記録が完了しました（一部エラーあり）\n"+
+				"記録されたメッセージ数: %d件\n"+
+				"失敗したメッセージ数: %d件\n"+
+				"記録先: %s", processedCount, failureCount, sheetURL)
+		} else {
+			completionMessage = fmt.Sprintf("✅ シートリセット後の履歴記録が完了しました！\n"+
+				"記録されたメッセージ数: %d件\n"+
+				"記録先: %s", processedCount, sheetURL)
+		}
 	} else {
-		completionMessage = fmt.Sprintf("✅ 過去のメッセージ履歴の記録が完了しました！\n"+
-			"記録されたメッセージ数: %d件\n"+
-			"記録先: %s", processedCount, sheetURL)
+		if failureCount > 0 {
+			completionMessage = fmt.Sprintf("⚠️ 過去のメッセージ履歴の記録が完了しました（一部エラーあり）\n"+
+				"記録されたメッセージ数: %d件\n"+
+				"失敗したメッセージ数: %d件\n"+
+				"記録先: %s", processedCount, failureCount, sheetURL)
+		} else {
+			completionMessage = fmt.Sprintf("✅ 過去のメッセージ履歴の記録が完了しました！\n"+
+				"記録されたメッセージ数: %d件\n"+
+				"記録先: %s", processedCount, sheetURL)
+		}
 	}
 
 	if err := slackClient.SendMessage(event.Event.Channel, completionMessage); err != nil {
