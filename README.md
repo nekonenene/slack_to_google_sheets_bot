@@ -110,35 +110,23 @@ For production-like environment with automatic deployment:
 - systemd service management
 - Real server performance testing
 
-1. **Setup remote server**:
-   ```bash
-   ./scripts/setup-remote.sh server-hostname server-username
-   ```
+**One-command setup**:
+```bash
+# Make sure you have .env and credentials.json in your project root
+./scripts/setup-remote.sh server-hostname server-username
+```
 
-2. **Configure deployment**:
-   ```bash
-   cp deploy.env.example deploy.env
-   # Edit deploy.env with your server details:
-   # REMOTE_HOST=server-hostname
-   # REMOTE_USER=server-username
-   ```
+This script will automatically:
+1. Create and configure `deploy.env` with your server details
+2. Setup the remote server with systemd service
+3. Copy your `.env` and `credentials.json` files to the server
 
-3. **Copy environment and credentials**:
-   ```bash
-   # Copy your .env file
-   scp .env server-username@server-hostname:/home/server-username/slack-to-google-sheets-bot/
+**Start development**:
+```bash
+make watch-deploy
+```
 
-   # Copy Google Sheets credentials
-   scp path/to/service-account.json server-username@server-hostname:/home/server-username/slack-to-google-sheets-bot/credentials.json
-   ```
-
-4. **Start auto-deployment**:
-   ```bash
-   make watch-deploy
-   ```
-
-Now any changes to `.go` files will automatically build and deploy to your remote server!
-The auto-deploy system also watches for changes to `.env` files and will sync them to the remote server and restart the service.
+Now any changes to `.go` or `.env` files will automatically build and deploy to your remote server!
 
 **Important:** After setting up your remote server, update your Slack app's Event Subscriptions URL to point to your server:
 - Go to your Slack app settings → Event Subscriptions
@@ -222,7 +210,15 @@ ngrok http 55999
 
 **Event URL verification failed**
 - Make sure your server is accessible from the internet
-- Check that the port (55999) is open in your firewall/security group
+- Check that the port (55999) is open in your firewall:
+  ```bash
+  # Enable ufw firewall rule for port 55999
+  sudo ufw allow 55999/tcp comment 'Slack to Google Sheets Bot'
+  sudo ufw enable
+  
+  # Check firewall status
+  sudo ufw status
+  ```
 - Verify the URL format: `http://your-server-ip:55999/slack/events`
 
 **Bot doesn't respond to events**

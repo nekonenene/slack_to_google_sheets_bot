@@ -17,7 +17,6 @@ help:
 init:
 	go mod tidy
 	cp .env.example .env
-	cp deploy.env.example deploy.env
 
 # Download dependencies
 .PHONY: deps
