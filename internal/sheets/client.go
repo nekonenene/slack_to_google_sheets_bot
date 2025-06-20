@@ -13,6 +13,17 @@ import (
 	"google.golang.org/api/sheets/v4"
 )
 
+// Expected headers for Google Sheets
+var expectedHeaders = []interface{}{
+	"No.",
+	"投稿日時",
+	"発信者（ハンドル名）",
+	"発信者（本名）",
+	"発言内容",
+	"どの No. のスレッド投稿に対する投稿か（スレッドに紐づく投稿でなければ空白）",
+	"投稿ID",
+}
+
 type Client struct {
 	service *sheets.Service
 }
@@ -71,27 +82,35 @@ func (c *Client) WriteMessage(spreadsheetID string, record *MessageRecord) error
 		return err
 	}
 
-	// Check for duplicates by looking for existing message ID
-	if exists, err := c.messageExistsInSheet(spreadsheetID, sheetName, record.MessageTS); err != nil {
-		log.Printf("Warning: could not check for duplicates: %v", err)
-	} else if exists {
+	// Get sheet data once for all operations (efficiency)
+	sheetData, err := c.getSheetData(spreadsheetID, sheetName)
+	if err != nil {
+		return fmt.Errorf("failed to get sheet data: %v", err)
+	}
+
+	// Check and fix header if needed
+	if err := c.ensureCorrectHeader(spreadsheetID, sheetName, sheetData); err != nil {
+		log.Printf("Warning: could not ensure correct header: %v", err)
+		// Reload data after header fix
+		sheetData, err = c.getSheetData(spreadsheetID, sheetName)
+		if err != nil {
+			return fmt.Errorf("failed to reload sheet data after header fix: %v", err)
+		}
+	}
+
+	// Check for duplicates using already loaded data
+	if c.messageExistsInData(sheetData, record.MessageTS) {
 		log.Printf("Message %s already exists in sheet %s, skipping", record.MessageTS, sheetName)
 		return nil
 	}
 
-	// Get the next row number (No.)
-	nextRowNumber, err := c.getNextRowNumber(spreadsheetID, sheetName)
-	if err != nil {
-		log.Printf("Warning: could not get next row number: %v", err)
-		nextRowNumber = 1 // Default to 1 if we can't determine
-	}
+	// Get the next row number (No.) from loaded data
+	nextRowNumber := c.getNextRowNumberFromData(sheetData)
 
-	// Find thread parent No. if this is a thread reply
+	// Find thread parent No. if this is a thread reply using loaded data
 	threadParentNo := ""
 	if record.ThreadTS != "" && record.ThreadTS != record.MessageTS {
-		if parentNo, err := c.findThreadParentNo(spreadsheetID, sheetName, record.ThreadTS); err != nil {
-			log.Printf("Warning: could not find thread parent: %v", err)
-		} else if parentNo > 0 {
+		if parentNo := c.findThreadParentNoInData(sheetData, record.ThreadTS); parentNo > 0 {
 			threadParentNo = fmt.Sprintf("%d", parentNo)
 		}
 	}
@@ -175,18 +194,9 @@ func (c *Client) ensureSheetExists(spreadsheetID, sheetName string) error {
 	}
 
 	// Add headers
-	headers := []interface{}{
-		"No.",
-		"投稿日時",
-		"発信者（ハンドル名）",
-		"発信者（本名）",
-		"発言内容",
-		"どの No. のスレッド投稿に対する投稿か（スレッドに紐づく投稿でなければ空白）",
-		"投稿ID",
-	}
 
 	headerRange := &sheets.ValueRange{
-		Values: [][]interface{}{headers},
+		Values: [][]interface{}{expectedHeaders},
 	}
 
 	_, err = c.service.Spreadsheets.Values.Update(
@@ -289,18 +299,9 @@ func (c *Client) ensureChannelSheetExists(spreadsheetID, channelID, channelName 
 	}
 
 	// Add headers to new sheet
-	headers := []interface{}{
-		"No.",
-		"投稿日時",
-		"発信者（ハンドル名）",
-		"発信者（本名）",
-		"発言内容",
-		"どの No. のスレッド投稿に対する投稿か（スレッドに紐づく投稿でなければ空白）",
-		"投稿ID",
-	}
 
 	headerRange := &sheets.ValueRange{
-		Values: [][]interface{}{headers},
+		Values: [][]interface{}{expectedHeaders},
 	}
 
 	_, err = c.service.Spreadsheets.Values.Update(
@@ -362,4 +363,105 @@ func (c *Client) findThreadParentNo(spreadsheetID, sheetName, threadTS string) (
 	}
 
 	return 0, fmt.Errorf("thread parent not found")
+}
+
+func (c *Client) getSheetData(spreadsheetID, sheetName string) (*sheets.ValueRange, error) {
+	// Get all data from the sheet in one API call
+	resp, err := c.service.Spreadsheets.Values.Get(spreadsheetID, sheetName+"!A:G").Do()
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *Client) ensureCorrectHeader(spreadsheetID, sheetName string, sheetData *sheets.ValueRange) error {
+
+	// Check if header exists and is correct
+	needsHeaderUpdate := false
+	if len(sheetData.Values) == 0 {
+		needsHeaderUpdate = true
+		log.Printf("Sheet %s has no data, adding header", sheetName)
+	} else {
+		headerRow := sheetData.Values[0]
+		if len(headerRow) != len(expectedHeaders) {
+			needsHeaderUpdate = true
+			log.Printf("Sheet %s header has wrong number of columns: got %d, expected %d",
+				sheetName, len(headerRow), len(expectedHeaders))
+		} else {
+			for i, expected := range expectedHeaders {
+				if i >= len(headerRow) || headerRow[i] != expected {
+					needsHeaderUpdate = true
+					log.Printf("Sheet %s header column %d incorrect: got '%v', expected '%v'",
+						sheetName, i+1, headerRow[i], expected)
+					break
+				}
+			}
+		}
+	}
+
+	if needsHeaderUpdate {
+		log.Printf("Updating header for sheet %s", sheetName)
+		headerRange := &sheets.ValueRange{
+			Values: [][]interface{}{expectedHeaders},
+		}
+
+		_, err := c.service.Spreadsheets.Values.Update(
+			spreadsheetID,
+			sheetName+"!A1:G1",
+			headerRange,
+		).ValueInputOption("RAW").Do()
+
+		if err != nil {
+			return fmt.Errorf("failed to update header: %v", err)
+		}
+		log.Printf("Header updated successfully for sheet %s", sheetName)
+	}
+
+	return nil
+}
+
+func (c *Client) messageExistsInData(sheetData *sheets.ValueRange, messageTS string) bool {
+	// Skip header row (index 0) and check message IDs in column G (index 6)
+	for i, row := range sheetData.Values {
+		if i == 0 {
+			continue // Skip header
+		}
+		if len(row) > 6 && row[6] == messageTS {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) getNextRowNumberFromData(sheetData *sheets.ValueRange) int {
+	// Count rows (subtract 1 for header row, then add 1 for next number)
+	rowCount := len(sheetData.Values)
+	if rowCount <= 1 {
+		return 1 // First data row after header
+	}
+	return rowCount // This gives us the next row number
+}
+
+func (c *Client) findThreadParentNoInData(sheetData *sheets.ValueRange, threadTS string) int {
+	// Skip header row (index 0) and search for the thread parent
+	for i, row := range sheetData.Values {
+		if i == 0 {
+			continue // Skip header
+		}
+
+		if len(row) >= 7 && row[6] == threadTS {
+			// Found the parent message, return its No. (column A)
+			if len(row) >= 1 {
+				if rowNo, ok := row[0].(float64); ok {
+					return int(rowNo)
+				}
+				if rowNoStr, ok := row[0].(string); ok {
+					if rowNo, err := strconv.Atoi(rowNoStr); err == nil {
+						return rowNo
+					}
+				}
+			}
+		}
+	}
+	return 0
 }
