@@ -17,10 +17,12 @@ const (
 )
 
 var (
-	processingEvents = make(map[string]bool)
-	processingMutex  = sync.Mutex{}
-	recentMentions   = make(map[string]time.Time)
-	recentMutex      = sync.Mutex{}
+	processingEvents     = make(map[string]bool)
+	processingMutex      = sync.Mutex{}
+	recentMentions       = make(map[string]time.Time)
+	recentMutex          = sync.Mutex{}
+	recentMemberJoins    = make(map[string]time.Time)
+	recentMemberJoinMutex = sync.Mutex{}
 )
 
 func HandleEvent(cfg *config.Config, event *Event) error {
@@ -30,6 +32,50 @@ func HandleEvent(cfg *config.Config, event *Event) error {
 
 	// Handle member joined channel event
 	if event.Event.Type == "member_joined_channel" {
+		log.Printf("Processing member_joined_channel event for channel: %s, user: %s", event.Event.Channel, event.Event.User)
+
+		// Create unique key for this member join event
+		eventKey := fmt.Sprintf("member_joined_%s_%s", event.Event.Channel, event.Event.User)
+
+		// Check if already processing this event
+		processingMutex.Lock()
+		if processingEvents[eventKey] {
+			processingMutex.Unlock()
+			log.Printf("Already processing member_joined for channel %s, user %s, skipping", event.Event.Channel, event.Event.User)
+			return nil
+		}
+		processingEvents[eventKey] = true
+		processingMutex.Unlock()
+
+		// Check for recent member joins in same channel (within 120 seconds)
+		recentMemberJoinMutex.Lock()
+		channelKey := fmt.Sprintf("channel_%s", event.Event.Channel)
+		if lastJoinTime, exists := recentMemberJoins[channelKey]; exists {
+			if time.Since(lastJoinTime) < 120*time.Second {
+				recentMemberJoinMutex.Unlock()
+				processingMutex.Lock()
+				delete(processingEvents, eventKey)
+				processingMutex.Unlock()
+				log.Printf("Recent member join detected in channel %s (within 120s), skipping", event.Event.Channel)
+				return nil
+			}
+		}
+		recentMemberJoins[channelKey] = time.Now()
+		recentMemberJoinMutex.Unlock()
+
+		// Block app_mention events for this channel for the next 5 minutes
+		recentMutex.Lock()
+		recentMentions[event.Event.Channel] = time.Now().Add(5 * time.Minute)
+		recentMutex.Unlock()
+		log.Printf("Blocked app_mention events for channel %s for 5 minutes due to member join", event.Event.Channel)
+
+		// Clean up after processing
+		defer func() {
+			processingMutex.Lock()
+			delete(processingEvents, eventKey)
+			processingMutex.Unlock()
+		}()
+
 		return handleMemberJoined(cfg, event)
 	}
 
@@ -50,7 +96,7 @@ func HandleEvent(cfg *config.Config, event *Event) error {
 		processingEvents[eventKey] = true
 		processingMutex.Unlock()
 
-		// Check for recent mentions in same channel (within 120 seconds)
+		// Check for recent mentions in same channel (within 120 seconds) or if blocked by member join
 		recentMutex.Lock()
 		if lastMentionTime, exists := recentMentions[event.Event.Channel]; exists {
 			if time.Since(lastMentionTime) < 120*time.Second {
@@ -58,7 +104,7 @@ func HandleEvent(cfg *config.Config, event *Event) error {
 				processingMutex.Lock()
 				delete(processingEvents, eventKey)
 				processingMutex.Unlock()
-				log.Printf("Recent mention detected in channel %s (within 120s), skipping", event.Event.Channel)
+				log.Printf("Recent mention detected in channel %s (within 120s) or blocked by member join, skipping", event.Event.Channel)
 				return nil
 			}
 		}
