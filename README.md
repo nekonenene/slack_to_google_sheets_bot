@@ -159,6 +159,16 @@ ssh server-username@server-hostname "sudo rm /etc/systemd/system/slack-to-google
 # Reload systemd
 ssh server-username@server-hostname "sudo systemctl daemon-reload"
 
+# Remove firewall rule
+# For ufw (Ubuntu/Debian)
+ssh server-username@server-hostname "sudo ufw delete allow 55999/tcp"
+
+# For firewalld (CentOS/RHEL/Fedora)
+ssh server-username@server-hostname "sudo firewall-cmd --permanent --remove-port=55999/tcp && sudo firewall-cmd --reload"
+
+# For iptables (manual)
+ssh server-username@server-hostname "sudo iptables -D INPUT -p tcp --dport 55999 -j ACCEPT"
+
 # Remove application directory (be careful with this command!)
 ssh server-username@server-hostname "rm -rf /home/server-username/slack-to-google-sheets-bot"
 ```
@@ -212,12 +222,18 @@ ngrok http 55999
 - Make sure your server is accessible from the internet
 - Check that the port (55999) is open in your firewall:
   ```bash
-  # Enable ufw firewall rule for port 55999
+  # For ufw (Ubuntu/Debian)
   sudo ufw allow 55999/tcp comment 'Slack to Google Sheets Bot'
   sudo ufw enable
-  
-  # Check firewall status
   sudo ufw status
+  
+  # For firewalld (CentOS/RHEL/Fedora)
+  sudo firewall-cmd --permanent --add-port=55999/tcp
+  sudo firewall-cmd --reload
+  sudo firewall-cmd --list-ports
+  
+  # For iptables (manual)
+  sudo iptables -A INPUT -p tcp --dport 55999 -j ACCEPT
   ```
 - Verify the URL format: `http://your-server-ip:55999/slack/events`
 
