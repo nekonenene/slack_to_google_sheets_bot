@@ -29,3 +29,6 @@ This is a new project - no Go code has been implemented yet. When implementing:
 - Follow standard Go project structure
 - Implement rate limiting for Slack API calls
 - Consider using goroutines for concurrent processing while respecting rate limits
+
+## Git Guidelines
+- Commit message must be one line
