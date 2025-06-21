@@ -842,12 +842,13 @@ func (c *Client) FormatMessageText(text string) string {
 }
 
 // getMessagesAfterTime retrieves messages posted after a specific time
+// Uses optimized approach: starts from latest messages and stops when encountering older messages
 func (c *Client) getMessagesAfterTime(channelID, channelName string, afterTime time.Time) ([]*sheets.MessageRecord, error) {
 	var allRecords []*sheets.MessageRecord
 	cursor := ""
-	pageLimit := 200
+	pageLimit := 50 // Smaller page size for faster response and reduced API calls
 
-	log.Printf("Getting messages after %v for channel %s", afterTime, channelID)
+	log.Printf("Getting messages after %v for channel %s (optimized approach)", afterTime, channelID)
 
 	for {
 		var historyResp HistoryResponse
@@ -894,7 +895,10 @@ func (c *Client) getMessagesAfterTime(channelID, channelName string, afterTime t
 			return nil, err
 		}
 
-		// Convert messages to MessageRecord format
+		// Convert messages to MessageRecord format and check for early termination
+		foundOlderMessage := false
+		var pageRecords []*sheets.MessageRecord
+
 		for _, msg := range historyResp.Messages {
 			if msg.Type == "message" {
 				// Parse timestamp
@@ -904,9 +908,11 @@ func (c *Client) getMessagesAfterTime(channelID, channelName string, afterTime t
 				}
 				msgTime := time.Unix(int64(ts), 0)
 
-				// Skip messages that are not newer than afterTime
-				if !msgTime.After(afterTime) {
-					continue
+				// If we encounter a message older than or equal to afterTime, stop processing
+				// since messages are ordered newest first
+				if msgTime.Before(afterTime) || msgTime.Equal(afterTime) {
+					foundOlderMessage = true
+					break
 				}
 
 				// Get user info (handle both human users and bots)
@@ -957,8 +963,110 @@ func (c *Client) getMessagesAfterTime(channelID, channelName string, afterTime t
 					MessageTS:    msg.Timestamp,
 				}
 
-				allRecords = append(allRecords, record)
+				pageRecords = append(pageRecords, record)
 			}
+		}
+
+		// Add page records to total collection
+		allRecords = append(allRecords, pageRecords...)
+
+		// Get thread replies for messages in this page that have thread_ts and are newer than afterTime
+		// Only process if we haven't found older messages yet
+		if !foundOlderMessage {
+			for _, msg := range historyResp.Messages {
+				if msg.ThreadTS != "" && msg.ThreadTS == msg.Timestamp {
+					// Parse parent message timestamp to check if it's newer than afterTime
+					parentTs, err := strconv.ParseFloat(msg.Timestamp, 64)
+					if err != nil {
+						continue
+					}
+					parentTime := time.Unix(int64(parentTs), 0)
+
+					// Only get thread replies for parent messages newer than afterTime
+					if parentTime.Before(afterTime) || parentTime.Equal(afterTime) {
+						continue
+					}
+
+					// This is a parent message newer than afterTime, get its replies
+					threadReplies, err := c.getThreadReplies(channelID, msg.ThreadTS)
+					if err != nil {
+						log.Printf("Error getting thread replies for %s: %v", msg.ThreadTS, err)
+						continue
+					}
+
+					// Process thread replies, filtering by afterTime
+					for _, reply := range threadReplies {
+						if reply.Type == "message" {
+							ts, err := strconv.ParseFloat(reply.Timestamp, 64)
+							if err != nil {
+								continue
+							}
+							replyTime := time.Unix(int64(ts), 0)
+
+							// Only include thread replies that are newer than afterTime
+							if replyTime.Before(afterTime) || replyTime.Equal(afterTime) {
+								continue
+							}
+
+							// Get user info for thread reply
+							var userInfo *UserInfo
+							if reply.User != "" {
+								var err error
+								userInfo, err = c.GetUserInfo(reply.User)
+								if err != nil {
+									log.Printf("Error getting user info for %s: %v", reply.User, err)
+									userInfo = &UserInfo{ID: reply.User, Name: "Unknown", RealName: "Unknown"}
+								}
+							} else if reply.BotID != "" || reply.Username != "" {
+								botName := reply.Username
+								if reply.BotID != "" {
+									if botInfo, err := c.GetBotInfo(reply.BotID); err == nil {
+										botName = botInfo.Name
+									} else {
+										log.Printf("Could not get bot info for %s: %v", reply.BotID, err)
+										if reply.Username != "" {
+											botName = reply.Username
+										} else {
+											botName = "Bot"
+										}
+									}
+								} else if botName == "" {
+									botName = "Bot"
+								}
+								userInfo = &UserInfo{
+									ID:       reply.BotID,
+									Name:     botName,
+									RealName: botName,
+								}
+							} else {
+								userInfo = &UserInfo{ID: "", Name: "System", RealName: "System"}
+							}
+
+							formattedText := c.FormatMessageText(reply.Text)
+
+							replyRecord := &sheets.MessageRecord{
+								Timestamp:    replyTime,
+								Channel:      channelID,
+								ChannelName:  channelName,
+								User:         reply.User,
+								UserHandle:   userInfo.Name,
+								UserRealName: userInfo.RealName,
+								Text:         formattedText,
+								ThreadTS:     reply.ThreadTS,
+								MessageTS:    reply.Timestamp,
+							}
+
+							allRecords = append(allRecords, replyRecord)
+						}
+					}
+				}
+			}
+		}
+
+		// If we found an older message, we can stop searching
+		if foundOlderMessage {
+			log.Printf("Found messages older than %v, stopping search (optimization)", afterTime)
+			break
 		}
 
 		// Check if we have more pages

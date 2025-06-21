@@ -267,13 +267,14 @@ func isRateLimitError(err error) bool {
 	return strings.Contains(err.Error(), "ratelimited")
 }
 
-// scheduleHistoryRetry schedules a retry of history retrieval after 2 minutes
-func scheduleHistoryRetry(cfg *config.Config, channelID, channelName string, isInitialRecording bool) {
-	log.Printf("Scheduling history retry for channel %s in 2 minutes due to rate limit", channelID)
+// scheduleHistoryRetry schedules a retry of history retrieval after specified duration
+// Preserves the original start time to ensure new messages are properly captured
+func scheduleHistoryRetry(cfg *config.Config, channelID, channelName string, isInitialRecording bool, originalStartTime time.Time, retryDelay time.Duration) {
+	log.Printf("Scheduling history retry for channel %s in %v due to rate limit (preserving start time: %v)", channelID, retryDelay, originalStartTime)
 
 	go func() {
-		time.Sleep(2 * time.Minute)
-		log.Printf("Retrying history retrieval for channel %s after rate limit delay", channelID)
+		time.Sleep(retryDelay)
+		log.Printf("Retrying history retrieval for channel %s after %v delay", channelID, retryDelay)
 
 		// Create a mock event for retry
 		mockEvent := &Event{
@@ -283,11 +284,11 @@ func scheduleHistoryRetry(cfg *config.Config, channelID, channelName string, isI
 		}
 
 		if isInitialRecording {
-			if err := retryMemberJoinedHistory(cfg, mockEvent, channelName); err != nil {
+			if err := retryMemberJoinedHistoryWithStartTime(cfg, mockEvent, channelName, originalStartTime); err != nil {
 				log.Printf("Failed to retry member joined history for channel %s: %v", channelID, err)
 			}
 		} else {
-			if err := retryAppMentionHistory(cfg, mockEvent, channelName); err != nil {
+			if err := retryAppMentionHistoryWithStartTime(cfg, mockEvent, channelName, originalStartTime); err != nil {
 				log.Printf("Failed to retry app mention history for channel %s: %v", channelID, err)
 			}
 		}
@@ -310,6 +311,22 @@ func retryMemberJoinedHistory(cfg *config.Config, event *Event, channelName stri
 	return performHistoryRetrieval(cfg, slackClient, event, channelInfo, true)
 }
 
+// retryMemberJoinedHistoryWithStartTime retries the member joined history retrieval with preserved start time
+func retryMemberJoinedHistoryWithStartTime(cfg *config.Config, event *Event, channelName string, originalStartTime time.Time) error {
+	slackClient := NewClient(cfg.SlackBotToken)
+
+	// Get channel information
+	channelInfo := &ChannelInfo{ID: event.Event.Channel, Name: channelName}
+	if channelName == "" {
+		if info, err := slackClient.GetChannelInfo(event.Event.Channel); err == nil {
+			channelInfo = info
+		}
+	}
+
+	// Call the history retrieval with preserved start time
+	return performHistoryRetrievalWithStartTime(cfg, slackClient, event, channelInfo, true, originalStartTime)
+}
+
 // retryAppMentionHistory retries the app mention history retrieval
 func retryAppMentionHistory(cfg *config.Config, event *Event, channelName string) error {
 	slackClient := NewClient(cfg.SlackBotToken)
@@ -326,8 +343,29 @@ func retryAppMentionHistory(cfg *config.Config, event *Event, channelName string
 	return performHistoryRetrieval(cfg, slackClient, event, channelInfo, false)
 }
 
+// retryAppMentionHistoryWithStartTime retries the app mention history retrieval with preserved start time
+func retryAppMentionHistoryWithStartTime(cfg *config.Config, event *Event, channelName string, originalStartTime time.Time) error {
+	slackClient := NewClient(cfg.SlackBotToken)
+
+	// Get channel information
+	channelInfo := &ChannelInfo{ID: event.Event.Channel, Name: channelName}
+	if channelName == "" {
+		if info, err := slackClient.GetChannelInfo(event.Event.Channel); err == nil {
+			channelInfo = info
+		}
+	}
+
+	// Call the history retrieval with preserved start time
+	return performHistoryRetrievalWithStartTime(cfg, slackClient, event, channelInfo, false, originalStartTime)
+}
+
 // performHistoryRetrieval performs the actual history retrieval with progress tracking
 func performHistoryRetrieval(cfg *config.Config, slackClient *Client, event *Event, channelInfo *ChannelInfo, isInitialRecording bool) error {
+	return performHistoryRetrievalWithStartTime(cfg, slackClient, event, channelInfo, isInitialRecording, time.Now())
+}
+
+// performHistoryRetrievalWithStartTime performs the actual history retrieval with a specified start time
+func performHistoryRetrievalWithStartTime(cfg *config.Config, slackClient *Client, event *Event, channelInfo *ChannelInfo, isInitialRecording bool, originalStartTime time.Time) error {
 	// Check if Google Sheets is configured
 	if cfg.GoogleSheetsCredentials == "" || cfg.SpreadsheetID == "" {
 		configMessage := "⚠️ Google Sheetsの設定が完了していません。管理者にお問い合わせください。"
@@ -352,10 +390,10 @@ func performHistoryRetrieval(cfg *config.Config, slackClient *Client, event *Eve
 		return err
 	}
 
-	// Set history retrieval in progress flag with start time
+	// Set history retrieval in progress flag with original start time
 	historyProgressMutex.Lock()
 	historyInProgress[event.Event.Channel] = true
-	historyStartTime[event.Event.Channel] = time.Now()
+	historyStartTime[event.Event.Channel] = originalStartTime
 	historyProgressMutex.Unlock()
 
 	// Ensure flag is cleared when function exits
@@ -385,8 +423,8 @@ func performHistoryRetrieval(cfg *config.Config, slackClient *Client, event *Eve
 				log.Printf("Error sending rate limit message: %v", err)
 			}
 
-			// Schedule retry after 2 minutes
-			scheduleHistoryRetry(cfg, event.Event.Channel, channelInfo.Name, isInitialRecording)
+			// Schedule retry after 2 minutes with preserved original start time
+			scheduleHistoryRetry(cfg, event.Event.Channel, channelInfo.Name, isInitialRecording, originalStartTime, 2*time.Minute)
 			return nil // Don't return error, let the retry handle it
 		}
 
@@ -431,30 +469,79 @@ func performHistoryRetrieval(cfg *config.Config, slackClient *Client, event *Eve
 	startTime := historyStartTime[event.Event.Channel]
 	historyProgressMutex.Unlock()
 
+	log.Printf("Checking for new messages after original start time: %v (channel: %s)", startTime, event.Event.Channel)
 	newMessages, err := slackClient.getMessagesAfterTime(event.Event.Channel, channelInfo.Name, startTime)
 	if err != nil {
-		log.Printf("Warning: Could not get new messages after history retrieval: %v", err)
+		log.Printf("Error: Could not get new messages after history retrieval: %v", err)
+
+		// Check if this is a rate limit error for new messages retrieval
+		if isRateLimitError(err) {
+			rateLimitMessage := "⏳ 処理中の新着メッセージ取得でレート制限が発生しました。2分後に再開します..."
+			if err := slackClient.SendMessage(event.Event.Channel, rateLimitMessage); err != nil {
+				log.Printf("Error sending rate limit message for new messages: %v", err)
+			}
+
+			// Schedule retry for the entire process to ensure new messages are captured
+			scheduleHistoryRetry(cfg, event.Event.Channel, channelInfo.Name, isInitialRecording, originalStartTime, 2*time.Minute)
+			return nil // Don't return error, let the retry handle it
+		}
+
+		// For non-rate-limit errors, send error message but continue
+		errorMessage := "⚠️ 処理中の新着メッセージ取得に失敗しました。一部のメッセージが記録されていない可能性があります。"
+		if err := slackClient.SendMessage(event.Event.Channel, errorMessage); err != nil {
+			log.Printf("Error sending new messages error notification: %v", err)
+		}
 	} else if len(newMessages) > 0 {
 		log.Printf("Found %d new messages during history retrieval, adding them", len(newMessages))
 		if err := sheetsClient.WriteBatchMessages(cfg.SpreadsheetID, newMessages); err != nil {
-			log.Printf("Warning: Could not write new messages after history retrieval: %v", err)
+			log.Printf("Error: Could not write new messages after history retrieval: %v", err)
+
+			// Critical failure - unable to write new messages
+			errorMessage := "❌ 処理中の新着メッセージの記録に失敗しました。再度実行してください。"
+			if err := slackClient.SendMessage(event.Event.Channel, errorMessage); err != nil {
+				log.Printf("Error sending write failure notification: %v", err)
+			}
+			return err
 		} else {
 			log.Printf("Successfully added %d new messages after history retrieval", len(newMessages))
 		}
+	} else {
+		log.Printf("No new messages found during history retrieval period")
 	}
 
 	// Send completion message
 	sheetURL := fmt.Sprintf("https://docs.google.com/spreadsheets/d/%s", cfg.SpreadsheetID)
 	var completionMessage string
 
+	totalRecorded := len(records)
+	if len(newMessages) > 0 {
+		totalRecorded += len(newMessages)
+	}
+
 	if isInitialRecording {
-		completionMessage = fmt.Sprintf("✅ 初回のメッセージ履歴記録が完了しました！\n"+
-			"記録されたメッセージ数: %d件\n"+
-			"記録先: %s", len(records), sheetURL)
+		if len(newMessages) > 0 {
+			completionMessage = fmt.Sprintf("✅ 初回のメッセージ履歴記録が完了しました！\n"+
+				"履歴メッセージ数: %d件\n"+
+				"処理中の新着メッセージ数: %d件\n"+
+				"合計記録数: %d件\n"+
+				"記録先: %s", len(records), len(newMessages), totalRecorded, sheetURL)
+		} else {
+			completionMessage = fmt.Sprintf("✅ 初回のメッセージ履歴記録が完了しました！\n"+
+				"記録されたメッセージ数: %d件\n"+
+				"記録先: %s", totalRecorded, sheetURL)
+		}
 	} else {
-		completionMessage = fmt.Sprintf("✅ 過去のメッセージ履歴の記録が完了しました！\n"+
-			"記録されたメッセージ数: %d件\n"+
-			"記録先: %s", len(records), sheetURL)
+		if len(newMessages) > 0 {
+			completionMessage = fmt.Sprintf("✅ 過去のメッセージ履歴の記録が完了しました！\n"+
+				"履歴メッセージ数: %d件\n"+
+				"処理中の新着メッセージ数: %d件\n"+
+				"合計記録数: %d件\n"+
+				"記録先: %s", len(records), len(newMessages), totalRecorded, sheetURL)
+		} else {
+			completionMessage = fmt.Sprintf("✅ 過去のメッセージ履歴の記録が完了しました！\n"+
+				"記録されたメッセージ数: %d件\n"+
+				"記録先: %s", totalRecorded, sheetURL)
+		}
 	}
 
 	if err := slackClient.SendMessage(event.Event.Channel, completionMessage); err != nil {
