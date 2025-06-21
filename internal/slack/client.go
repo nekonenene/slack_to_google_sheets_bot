@@ -854,10 +854,10 @@ func (c *Client) getMessagesAfterTime(channelID, channelName string, afterTime t
 		err := retryWithBackoff(func() error {
 			var url string
 			if cursor == "" {
-				url = fmt.Sprintf("https://slack.com/api/conversations.history?channel=%s&limit=%d&oldest=%f", 
+				url = fmt.Sprintf("https://slack.com/api/conversations.history?channel=%s&limit=%d&oldest=%f",
 					channelID, pageLimit, float64(afterTime.Unix()))
 			} else {
-				url = fmt.Sprintf("https://slack.com/api/conversations.history?channel=%s&limit=%d&oldest=%f&cursor=%s", 
+				url = fmt.Sprintf("https://slack.com/api/conversations.history?channel=%s&limit=%d&oldest=%f&cursor=%s",
 					channelID, pageLimit, float64(afterTime.Unix()), cursor)
 			}
 

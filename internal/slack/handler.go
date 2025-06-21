@@ -51,16 +51,16 @@ func HandleEvent(cfg *config.Config, event *Event) error {
 		processingEvents[eventKey] = true
 		processingMutex.Unlock()
 
-		// Check for recent member joins in same channel (within 120 seconds)
+		// Check for recent member joins in same channel (within 90 seconds)
 		recentMemberJoinMutex.Lock()
 		channelKey := fmt.Sprintf("channel_%s", event.Event.Channel)
 		if lastJoinTime, exists := recentMemberJoins[channelKey]; exists {
-			if time.Since(lastJoinTime) < 120*time.Second {
+			if time.Since(lastJoinTime) < 90*time.Second {
 				recentMemberJoinMutex.Unlock()
 				processingMutex.Lock()
 				delete(processingEvents, eventKey)
 				processingMutex.Unlock()
-				log.Printf("Recent member join detected in channel %s (within 120s), skipping", event.Event.Channel)
+				log.Printf("Recent member join detected in channel %s (within 90s), skipping", event.Event.Channel)
 				return nil
 			}
 		}
@@ -100,15 +100,15 @@ func HandleEvent(cfg *config.Config, event *Event) error {
 		processingEvents[eventKey] = true
 		processingMutex.Unlock()
 
-		// Check for recent mentions in same channel (within 120 seconds) or if blocked by member join
+		// Check for recent mentions in same channel (within 90 seconds) or if blocked by member join
 		recentMutex.Lock()
 		if lastMentionTime, exists := recentMentions[event.Event.Channel]; exists {
-			if time.Since(lastMentionTime) < 120*time.Second {
+			if time.Since(lastMentionTime) < 90*time.Second {
 				recentMutex.Unlock()
 				processingMutex.Lock()
 				delete(processingEvents, eventKey)
 				processingMutex.Unlock()
-				log.Printf("Recent mention detected in channel %s (within 120s) or blocked by member join, skipping", event.Event.Channel)
+				log.Printf("Recent mention detected in channel %s (within 90s) or blocked by member join, skipping", event.Event.Channel)
 				return nil
 			}
 		}
@@ -259,12 +259,218 @@ func truncateText(text string, maxLength int) string {
 	return text[:maxLength] + "..."
 }
 
+// isRateLimitError checks if the error is a Slack API rate limit error
+func isRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "ratelimited")
+}
+
+// scheduleHistoryRetry schedules a retry of history retrieval after 5 minutes
+func scheduleHistoryRetry(cfg *config.Config, channelID, channelName string, isInitialRecording bool) {
+	log.Printf("Scheduling history retry for channel %s in 5 minutes due to rate limit", channelID)
+
+	go func() {
+		time.Sleep(5 * time.Minute)
+		log.Printf("Retrying history retrieval for channel %s after rate limit delay", channelID)
+
+		// Create a mock event for retry
+		mockEvent := &Event{
+			Event: EventData{
+				Channel: channelID,
+			},
+		}
+
+		if isInitialRecording {
+			if err := retryMemberJoinedHistory(cfg, mockEvent, channelName); err != nil {
+				log.Printf("Failed to retry member joined history for channel %s: %v", channelID, err)
+			}
+		} else {
+			if err := retryAppMentionHistory(cfg, mockEvent, channelName); err != nil {
+				log.Printf("Failed to retry app mention history for channel %s: %v", channelID, err)
+			}
+		}
+	}()
+}
+
+// retryMemberJoinedHistory retries the member joined history retrieval
+func retryMemberJoinedHistory(cfg *config.Config, event *Event, channelName string) error {
+	slackClient := NewClient(cfg.SlackBotToken)
+
+	// Get channel information
+	channelInfo := &ChannelInfo{ID: event.Event.Channel, Name: channelName}
+	if channelName == "" {
+		if info, err := slackClient.GetChannelInfo(event.Event.Channel); err == nil {
+			channelInfo = info
+		}
+	}
+
+	// Call the original member joined logic (without the initial setup)
+	return performHistoryRetrieval(cfg, slackClient, event, channelInfo, true)
+}
+
+// retryAppMentionHistory retries the app mention history retrieval
+func retryAppMentionHistory(cfg *config.Config, event *Event, channelName string) error {
+	slackClient := NewClient(cfg.SlackBotToken)
+
+	// Get channel information
+	channelInfo := &ChannelInfo{ID: event.Event.Channel, Name: channelName}
+	if channelName == "" {
+		if info, err := slackClient.GetChannelInfo(event.Event.Channel); err == nil {
+			channelInfo = info
+		}
+	}
+
+	// Call the original app mention logic (without reset handling)
+	return performHistoryRetrieval(cfg, slackClient, event, channelInfo, false)
+}
+
+// performHistoryRetrieval performs the actual history retrieval with progress tracking
+func performHistoryRetrieval(cfg *config.Config, slackClient *Client, event *Event, channelInfo *ChannelInfo, isInitialRecording bool) error {
+	// Check if Google Sheets is configured
+	if cfg.GoogleSheetsCredentials == "" || cfg.SpreadsheetID == "" {
+		configMessage := "⚠️ Google Sheetsの設定が完了していません。管理者にお問い合わせください。"
+		slackClient.SendMessage(event.Event.Channel, configMessage)
+		return nil
+	}
+
+	// Create Google Sheets client
+	sheetsClient, err := sheets.NewClient(cfg.GoogleSheetsCredentials)
+	if err != nil {
+		log.Printf("Error creating Google Sheets client: %v", err)
+		errorMessage := "❌ Google Sheetsへの接続に失敗しました。"
+		slackClient.SendMessage(event.Event.Channel, errorMessage)
+		return err
+	}
+
+	// Ensure channel-specific sheet exists
+	if err := sheetsClient.EnsureChannelSheetExists(cfg.SpreadsheetID, event.Event.Channel, channelInfo.Name); err != nil {
+		log.Printf("Error ensuring channel sheet exists: %v", err)
+		errorMessage := "❌ スプレッドシートの初期化に失敗しました。"
+		slackClient.SendMessage(event.Event.Channel, errorMessage)
+		return err
+	}
+
+	// Set history retrieval in progress flag with start time
+	historyProgressMutex.Lock()
+	historyInProgress[event.Event.Channel] = true
+	historyStartTime[event.Event.Channel] = time.Now()
+	historyProgressMutex.Unlock()
+
+	// Ensure flag is cleared when function exits
+	defer func() {
+		historyProgressMutex.Lock()
+		delete(historyInProgress, event.Event.Channel)
+		delete(historyStartTime, event.Event.Channel)
+		historyProgressMutex.Unlock()
+	}()
+
+	// Get channel history with progress tracking
+	progressMgr := progress.NewManager()
+
+	// Check if there's existing progress
+	if progressMgr.HasProgress(event.Event.Channel) {
+		log.Printf("Found existing progress for channel %s, resuming...", event.Event.Channel)
+		resumeMessage := "🔄 前回の処理を再開しています..."
+		if err := slackClient.SendMessage(event.Event.Channel, resumeMessage); err != nil {
+			log.Printf("Error sending resume message: %v", err)
+		}
+	}
+
+	records, err := slackClient.GetChannelHistoryWithProgress(event.Event.Channel, channelInfo.Name, 0, progressMgr)
+	if err != nil {
+		log.Printf("Error getting channel history: %v", err)
+
+		// Check if this is a rate limit error
+		if isRateLimitError(err) {
+			rateLimitMessage := "⏳ Slack APIのレート制限により一時的に処理が中断されました。\n5分後に自動的に再開します..."
+			if err := slackClient.SendMessage(event.Event.Channel, rateLimitMessage); err != nil {
+				log.Printf("Error sending rate limit message: %v", err)
+			}
+
+			// Schedule retry after 5 minutes
+			scheduleHistoryRetry(cfg, event.Event.Channel, channelInfo.Name, isInitialRecording)
+			return nil // Don't return error, let the retry handle it
+		}
+
+		errorMessage := "❌ チャンネル履歴の取得に失敗しました。"
+		slackClient.SendMessage(event.Event.Channel, errorMessage)
+		return err
+	}
+
+	if len(records) == 0 {
+		noMessagesMsg := "ℹ️ 記録するメッセージが見つかりませんでした。"
+		slackClient.SendMessage(event.Event.Channel, noMessagesMsg)
+		return nil
+	}
+
+	// Write messages to spreadsheet
+	// Use WriteBatchMessagesFromRow2 for initial recording and reset operations
+	// to ensure data starts from row 2 regardless of existing content
+	if err := sheetsClient.WriteBatchMessagesFromRow2(cfg.SpreadsheetID, records); err != nil {
+		log.Printf("Error writing batch messages to sheets after retries: %v", err)
+		errorMessage := fmt.Sprintf("❌ スプレッドシートへの記録に失敗しました（4回試行後）\n"+
+			"エラー: %v\n"+
+			"ネットワークまたはAPI制限の問題の可能性があります。\n"+
+			"しばらく時間をおいてから再度お試しください。", err)
+		if notifyErr := slackClient.SendMessage(event.Event.Channel, errorMessage); notifyErr != nil {
+			log.Printf("Error sending failure notification after retries: %v", notifyErr)
+		}
+		return err
+	}
+
+	// Mark progress as completed and clean up
+	if err := progressMgr.UpdatePhase(event.Event.Channel, "completed"); err != nil {
+		log.Printf("Warning: Could not update progress phase: %v", err)
+	}
+
+	// Delete progress file after successful completion
+	if err := progressMgr.DeleteProgress(event.Event.Channel); err != nil {
+		log.Printf("Warning: Could not delete progress file: %v", err)
+	}
+
+	// Get any new messages that arrived during history retrieval
+	historyProgressMutex.Lock()
+	startTime := historyStartTime[event.Event.Channel]
+	historyProgressMutex.Unlock()
+
+	newMessages, err := slackClient.getMessagesAfterTime(event.Event.Channel, channelInfo.Name, startTime)
+	if err != nil {
+		log.Printf("Warning: Could not get new messages after history retrieval: %v", err)
+	} else if len(newMessages) > 0 {
+		log.Printf("Found %d new messages during history retrieval, adding them", len(newMessages))
+		if err := sheetsClient.WriteBatchMessages(cfg.SpreadsheetID, newMessages); err != nil {
+			log.Printf("Warning: Could not write new messages after history retrieval: %v", err)
+		} else {
+			log.Printf("Successfully added %d new messages after history retrieval", len(newMessages))
+		}
+	}
+
+	// Send completion message
+	sheetURL := fmt.Sprintf("https://docs.google.com/spreadsheets/d/%s", cfg.SpreadsheetID)
+	var completionMessage string
+
+	if isInitialRecording {
+		completionMessage = fmt.Sprintf("✅ 初回のメッセージ履歴記録が完了しました！\n"+
+			"記録されたメッセージ数: %d件\n"+
+			"記録先: %s", len(records), sheetURL)
+	} else {
+		completionMessage = fmt.Sprintf("✅ 過去のメッセージ履歴の記録が完了しました！\n"+
+			"記録されたメッセージ数: %d件\n"+
+			"記録先: %s", len(records), sheetURL)
+	}
+
+	if err := slackClient.SendMessage(event.Event.Channel, completionMessage); err != nil {
+		log.Printf("Error sending completion message: %v", err)
+	}
+
+	return nil
+}
+
 func handleMemberJoined(cfg *config.Config, event *Event) error {
 	// Check if the bot itself was added to the channel
 	slackClient := NewClient(cfg.SlackBotToken)
-
-	// Get bot user info to check if it's the bot being added
-	// For now, we'll handle any member join as a potential bot addition
 
 	// Get channel information
 	channelInfo, err := slackClient.GetChannelInfo(event.Event.Channel)
@@ -281,152 +487,8 @@ func handleMemberJoined(cfg *config.Config, event *Event) error {
 		log.Printf("Error sending initial message: %v", err)
 	}
 
-	// Initialize Google Sheets if configured
-	if cfg.GoogleSheetsCredentials != "" && cfg.SpreadsheetID != "" {
-		sheetsClient, err := sheets.NewClient(cfg.GoogleSheetsCredentials)
-		if err != nil {
-			log.Printf("Error creating Google Sheets client: %v", err)
-			errorMessage := "❌ Google Sheetsへの接続に失敗しました。"
-			slackClient.SendMessage(event.Event.Channel, errorMessage)
-			return err
-		}
-
-		// Ensure channel-specific sheet exists (this will create it if needed)
-		if err := sheetsClient.EnsureChannelSheetExists(cfg.SpreadsheetID, event.Event.Channel, channelInfo.Name); err != nil {
-			log.Printf("Error ensuring channel sheet exists: %v", err)
-			errorMessage := "❌ スプレッドシートの初期化に失敗しました。"
-			slackClient.SendMessage(event.Event.Channel, errorMessage)
-			return err
-		}
-
-		// Set history retrieval in progress flag with start time
-		historyProgressMutex.Lock()
-		historyInProgress[event.Event.Channel] = true
-		historyStartTime[event.Event.Channel] = time.Now()
-		historyProgressMutex.Unlock()
-
-		// Ensure flag is cleared when function exits
-		defer func() {
-			historyProgressMutex.Lock()
-			delete(historyInProgress, event.Event.Channel)
-			delete(historyStartTime, event.Event.Channel)
-			historyProgressMutex.Unlock()
-		}()
-
-		// Get channel history with progress tracking
-		progressMgr := progress.NewManager()
-
-		// Check if there's existing progress
-		if progressMgr.HasProgress(event.Event.Channel) {
-			log.Printf("Found existing progress for channel %s, resuming...", event.Event.Channel)
-			resumeMessage := "🔄 前回の処理を再開しています..."
-			if err := slackClient.SendMessage(event.Event.Channel, resumeMessage); err != nil {
-				log.Printf("Error sending resume message: %v", err)
-			}
-		}
-
-		records, err := slackClient.GetChannelHistoryWithProgress(event.Event.Channel, channelInfo.Name, 0, progressMgr)
-		if err != nil {
-			log.Printf("Error getting channel history for initial recording: %v", err)
-			errorMessage := "❌ チャンネル履歴の取得に失敗しました。"
-			slackClient.SendMessage(event.Event.Channel, errorMessage)
-			return err
-		}
-
-		processedCount := 0
-		failureCount := 0
-
-		if len(records) > 0 {
-			// Send progress message
-			progressMessage := fmt.Sprintf("📚 %d件のメッセージ履歴をスプレッドシートに記録しています...", len(records))
-			if err := slackClient.SendMessage(event.Event.Channel, progressMessage); err != nil {
-				log.Printf("Error sending progress message: %v", err)
-			}
-
-			log.Printf("Starting to write %d messages to spreadsheet for initial recording in channel %s", len(records), channelInfo.Name)
-
-			// Update progress phase to writing
-			if err := progressMgr.UpdatePhase(event.Event.Channel, "writing"); err != nil {
-				log.Printf("Warning: Could not update progress phase: %v", err)
-			}
-
-			// Write all messages in batch (this ensures chronological order)
-			if err := sheetsClient.WriteBatchMessages(cfg.SpreadsheetID, records); err != nil {
-				log.Printf("Error writing batch messages to sheets after retries: %v", err)
-				errorMessage := fmt.Sprintf("❌ 初回記録のスプレッドシートへの記録に失敗しました（4回試行後）\n"+
-					"エラー: %v\n"+
-					"ネットワークまたはAPI制限の問題の可能性があります。\n"+
-					"しばらく時間をおいてから再度お試しください。", err)
-				if notifyErr := slackClient.SendMessage(event.Event.Channel, errorMessage); notifyErr != nil {
-					log.Printf("Error sending failure notification after retries: %v", notifyErr)
-				}
-				return err
-			}
-
-			// Mark progress as completed and clean up
-			if err := progressMgr.UpdatePhase(event.Event.Channel, "completed"); err != nil {
-				log.Printf("Warning: Could not update progress phase: %v", err)
-			}
-
-			// Delete progress file after successful completion
-			if err := progressMgr.DeleteProgress(event.Event.Channel); err != nil {
-				log.Printf("Warning: Could not delete progress file: %v", err)
-			}
-
-			// Get any new messages that arrived during history retrieval
-			historyProgressMutex.Lock()
-			startTime := historyStartTime[event.Event.Channel]
-			historyProgressMutex.Unlock()
-
-			newMessages, err := slackClient.getMessagesAfterTime(event.Event.Channel, channelInfo.Name, startTime)
-			if err != nil {
-				log.Printf("Warning: Could not get new messages after history retrieval: %v", err)
-			} else if len(newMessages) > 0 {
-				log.Printf("Found %d new messages during history retrieval, adding them", len(newMessages))
-				if err := sheetsClient.WriteBatchMessages(cfg.SpreadsheetID, newMessages); err != nil {
-					log.Printf("Warning: Could not write new messages after history retrieval: %v", err)
-				} else {
-					log.Printf("Successfully added %d new messages after history retrieval", len(newMessages))
-				}
-			}
-
-			processedCount = len(records)
-			failureCount = 0
-		}
-
-		// Send completion message with sheet URL and statistics
-		sheetURL := fmt.Sprintf("https://docs.google.com/spreadsheets/d/%s", cfg.SpreadsheetID)
-		var completionMessage string
-
-		if len(records) == 0 {
-			completionMessage = fmt.Sprintf("✅ スプレッドシートの初期化が完了しました！\n"+
-				"記録するメッセージはありませんでした。\n"+
-				"記録先: %s", sheetURL)
-		} else if failureCount > 0 {
-			completionMessage = fmt.Sprintf("⚠️ 初回のメッセージ履歴記録が完了しました（一部エラーあり）\n"+
-				"記録されたメッセージ数: %d件\n"+
-				"失敗したメッセージ数: %d件\n"+
-				"記録先: %s", processedCount, failureCount, sheetURL)
-		} else {
-			completionMessage = fmt.Sprintf("✅ 初回のメッセージ履歴記録が完了しました！\n"+
-				"記録されたメッセージ数: %d件\n"+
-				"記録先: %s", processedCount, sheetURL)
-		}
-
-		if err := slackClient.SendMessage(event.Event.Channel, completionMessage); err != nil {
-			log.Printf("Error sending completion message: %v", err)
-		}
-
-		log.Printf("Bot added to channel #%s, %d messages recorded", channelInfo.Name, processedCount)
-	} else {
-		// Send message about missing configuration
-		configMessage := "⚠️ Google Sheetsの設定が完了していません。管理者にお問い合わせください。"
-		if err := slackClient.SendMessage(event.Event.Channel, configMessage); err != nil {
-			log.Printf("Error sending config message: %v", err)
-		}
-	}
-
-	return nil
+	// Use the common history retrieval function
+	return performHistoryRetrieval(cfg, slackClient, event, channelInfo, true)
 }
 
 func handleAppMention(cfg *config.Config, event *Event) error {
@@ -478,7 +540,7 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 		return err
 	}
 
-	// Handle reset request
+	// Handle reset request - clear existing data
 	if isResetRequest {
 		sheetName := fmt.Sprintf("%s-%s", channelInfo.Name, event.Event.Channel)
 
@@ -498,148 +560,15 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 			return err
 		}
 
-		resetMessage := "✅ シートをリセットしました。全履歴を再取得します..."
-		if err := slackClient.SendMessage(event.Event.Channel, resetMessage); err != nil {
-			log.Printf("Error sending reset confirmation: %v", err)
-		}
-
 		log.Printf("Sheet reset completed for channel %s", channelInfo.Name)
-	}
 
-	// Set history retrieval in progress flag with start time
-	historyProgressMutex.Lock()
-	historyInProgress[event.Event.Channel] = true
-	historyStartTime[event.Event.Channel] = time.Now()
-	historyProgressMutex.Unlock()
-
-	// Ensure flag is cleared when function exits
-	defer func() {
-		historyProgressMutex.Lock()
-		delete(historyInProgress, event.Event.Channel)
-		delete(historyStartTime, event.Event.Channel)
-		historyProgressMutex.Unlock()
-	}()
-
-	// Get channel history with progress tracking
-	progressMgr := progress.NewManager()
-
-	// For reset requests, clean up any existing progress first
-	if isResetRequest {
+		// Clean up any existing progress for reset
+		progressMgr := progress.NewManager()
 		if err := progressMgr.DeleteProgress(event.Event.Channel); err != nil {
 			log.Printf("Warning: Could not clean up existing progress: %v", err)
 		}
 	}
 
-	// Check if there's existing progress
-	if progressMgr.HasProgress(event.Event.Channel) {
-		log.Printf("Found existing progress for channel %s, resuming...", event.Event.Channel)
-		resumeMessage := "🔄 前回の処理を再開しています..."
-		if err := slackClient.SendMessage(event.Event.Channel, resumeMessage); err != nil {
-			log.Printf("Error sending resume message: %v", err)
-		}
-	}
-
-	records, err := slackClient.GetChannelHistoryWithProgress(event.Event.Channel, channelInfo.Name, 0, progressMgr)
-	if err != nil {
-		log.Printf("Error getting channel history: %v", err)
-		errorMessage := "❌ チャンネル履歴の取得に失敗しました。"
-		slackClient.SendMessage(event.Event.Channel, errorMessage)
-		return err
-	}
-
-	if len(records) == 0 {
-		noMessagesMsg := "ℹ️ 記録するメッセージが見つかりませんでした。"
-		slackClient.SendMessage(event.Event.Channel, noMessagesMsg)
-		return nil
-	}
-
-	log.Printf("Starting to write %d messages to spreadsheet for channel %s", len(records), channelInfo.Name)
-
-	// Update progress phase to writing
-	if err := progressMgr.UpdatePhase(event.Event.Channel, "writing"); err != nil {
-		log.Printf("Warning: Could not update progress phase: %v", err)
-	}
-
-	// Write all messages in batch (this ensures chronological order)
-	var processedCount int
-	var failureCount int
-
-	if err := sheetsClient.WriteBatchMessages(cfg.SpreadsheetID, records); err != nil {
-		log.Printf("Error writing batch messages to sheets after retries: %v", err)
-		errorMessage := fmt.Sprintf("❌ スプレッドシートへの記録に失敗しました（4回試行後）\n"+
-			"エラー: %v\n"+
-			"ネットワークまたはAPI制限の問題の可能性があります。\n"+
-			"しばらく時間をおいてから再度お試しください。", err)
-		// Slack通知も再試行ロジックを使用
-		if notifyErr := slackClient.SendMessage(event.Event.Channel, errorMessage); notifyErr != nil {
-			log.Printf("Error sending failure notification after retries: %v", notifyErr)
-		}
-		return err
-	}
-
-	// Mark progress as completed and clean up
-	if err := progressMgr.UpdatePhase(event.Event.Channel, "completed"); err != nil {
-		log.Printf("Warning: Could not update progress phase: %v", err)
-	}
-
-	// Delete progress file after successful completion
-	if err := progressMgr.DeleteProgress(event.Event.Channel); err != nil {
-		log.Printf("Warning: Could not delete progress file: %v", err)
-	}
-
-	// Get any new messages that arrived during history retrieval
-	historyProgressMutex.Lock()
-	startTime := historyStartTime[event.Event.Channel]
-	historyProgressMutex.Unlock()
-
-	newMessages, err := slackClient.getMessagesAfterTime(event.Event.Channel, channelInfo.Name, startTime)
-	if err != nil {
-		log.Printf("Warning: Could not get new messages after history retrieval: %v", err)
-	} else if len(newMessages) > 0 {
-		log.Printf("Found %d new messages during history retrieval, adding them", len(newMessages))
-		if err := sheetsClient.WriteBatchMessages(cfg.SpreadsheetID, newMessages); err != nil {
-			log.Printf("Warning: Could not write new messages after history retrieval: %v", err)
-		} else {
-			log.Printf("Successfully added %d new messages after history retrieval", len(newMessages))
-		}
-	}
-
-	processedCount = len(records)
-	failureCount = 0
-
-	// Send completion message
-	sheetURL := fmt.Sprintf("https://docs.google.com/spreadsheets/d/%s", cfg.SpreadsheetID)
-	var completionMessage string
-
-	if isResetRequest {
-		if failureCount > 0 {
-			completionMessage = fmt.Sprintf("⚠️ シートリセット後の履歴記録が完了しました（一部エラーあり）\n"+
-				"記録されたメッセージ数: %d件\n"+
-				"失敗したメッセージ数: %d件\n"+
-				"記録先: %s", processedCount, failureCount, sheetURL)
-		} else {
-			completionMessage = fmt.Sprintf("✅ シートリセット後の履歴記録が完了しました！\n"+
-				"記録されたメッセージ数: %d件\n"+
-				"記録先: %s", processedCount, sheetURL)
-		}
-	} else {
-		if failureCount > 0 {
-			completionMessage = fmt.Sprintf("⚠️ 過去のメッセージ履歴の記録が完了しました（一部エラーあり）\n"+
-				"記録されたメッセージ数: %d件\n"+
-				"失敗したメッセージ数: %d件\n"+
-				"記録先: %s", processedCount, failureCount, sheetURL)
-		} else {
-			completionMessage = fmt.Sprintf("✅ 過去のメッセージ履歴の記録が完了しました！\n"+
-				"記録されたメッセージ数: %d件\n"+
-				"記録先: %s", processedCount, sheetURL)
-		}
-	}
-
-	if err := slackClient.SendMessage(event.Event.Channel, completionMessage); err != nil {
-		log.Printf("Error sending completion message: %v", err)
-	}
-
-	log.Printf("App mention processed: %d messages recorded from #%s", processedCount, channelInfo.Name)
-	log.Printf("App mention processing completed for user %s, timestamp %s", event.Event.User, event.Event.Timestamp)
-	return nil
+	// Use the common history retrieval function
+	return performHistoryRetrieval(cfg, slackClient, event, channelInfo, false)
 }

@@ -788,3 +788,90 @@ func (c *Client) WriteMessagesStreamingWithProgress(spreadsheetID string, record
 
 	return nil
 }
+
+// WriteBatchMessagesFromRow2 writes messages starting from row 2, ignoring existing data
+// Used for initial execution and reset operations to ensure consistent positioning
+func (c *Client) WriteBatchMessagesFromRow2(spreadsheetID string, records []*MessageRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+
+	// Sort records by timestamp (oldest first)
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].Timestamp.Before(records[j].Timestamp)
+	})
+
+	// Use the first record to determine sheet name (all should be same channel)
+	sheetName := fmt.Sprintf("%s-%s", records[0].ChannelName, records[0].Channel)
+
+	// Ensure sheet exists
+	if err := c.ensureChannelSheetExists(spreadsheetID, records[0].Channel, records[0].ChannelName); err != nil {
+		return err
+	}
+
+	// Check and fix header if needed
+	sheetData, err := c.getSheetData(spreadsheetID, sheetName)
+	if err != nil {
+		return fmt.Errorf("failed to get sheet data: %v", err)
+	}
+
+	if err := c.ensureCorrectHeader(spreadsheetID, sheetName, sheetData); err != nil {
+		log.Printf("Warning: could not ensure correct header: %v", err)
+	}
+
+	// Prepare values for batch insert, starting from row 2 (No. = 1, 2, 3...)
+	var values [][]interface{}
+
+	for i, record := range records {
+		rowNumber := i + 1 // Start from 1 for the first data row
+
+		// Find thread parent No. if this is a thread reply
+		threadParentNo := ""
+		if record.ThreadTS != "" && record.ThreadTS != record.MessageTS {
+			// Check in the current batch being processed
+			for j := 0; j < i; j++ {
+				if records[j].MessageTS == record.ThreadTS {
+					threadParentNo = fmt.Sprintf("%d", j+1)
+					break
+				}
+			}
+		}
+
+		values = append(values, []interface{}{
+			rowNumber,
+			record.Timestamp.Format("2006-01-02 15:04:05"),
+			record.UserHandle,
+			record.UserRealName,
+			record.Text,
+			threadParentNo,
+			record.MessageTS,
+		})
+	}
+
+	// Write all messages starting from row 2, replacing any existing data
+	if len(values) > 0 {
+		err := retryWithBackoff(func() error {
+			valueRange := &sheets.ValueRange{
+				Values: values,
+			}
+
+			// Use Update instead of Append to write starting from row 2
+			startRange := fmt.Sprintf("%s!A2:G%d", sheetName, len(values)+1)
+			_, err := c.service.Spreadsheets.Values.Update(
+				spreadsheetID,
+				startRange,
+				valueRange,
+			).ValueInputOption("RAW").Do()
+
+			return err
+		}, fmt.Sprintf("write %d messages from row 2 to sheet %s", len(values), sheetName))
+
+		if err != nil {
+			return fmt.Errorf("unable to write batch data from row 2 to sheet: %v", err)
+		}
+
+		log.Printf("Successfully wrote %d messages from row 2 to sheet %s", len(values), sheetName)
+	}
+
+	return nil
+}
