@@ -267,12 +267,12 @@ func isRateLimitError(err error) bool {
 	return strings.Contains(err.Error(), "ratelimited")
 }
 
-// scheduleHistoryRetry schedules a retry of history retrieval after 5 minutes
+// scheduleHistoryRetry schedules a retry of history retrieval after 2 minutes
 func scheduleHistoryRetry(cfg *config.Config, channelID, channelName string, isInitialRecording bool) {
-	log.Printf("Scheduling history retry for channel %s in 5 minutes due to rate limit", channelID)
+	log.Printf("Scheduling history retry for channel %s in 2 minutes due to rate limit", channelID)
 
 	go func() {
-		time.Sleep(5 * time.Minute)
+		time.Sleep(2 * time.Minute)
 		log.Printf("Retrying history retrieval for channel %s after rate limit delay", channelID)
 
 		// Create a mock event for retry
@@ -380,12 +380,12 @@ func performHistoryRetrieval(cfg *config.Config, slackClient *Client, event *Eve
 
 		// Check if this is a rate limit error
 		if isRateLimitError(err) {
-			rateLimitMessage := "⏳ Slack APIのレート制限により一時的に処理が中断されました。\n5分後に自動的に再開します..."
+			rateLimitMessage := "⏳ Slack APIのレート制限により一時的に処理が中断されました。2分後に自動的に再開します"
 			if err := slackClient.SendMessage(event.Event.Channel, rateLimitMessage); err != nil {
 				log.Printf("Error sending rate limit message: %v", err)
 			}
 
-			// Schedule retry after 5 minutes
+			// Schedule retry after 2 minutes
 			scheduleHistoryRetry(cfg, event.Event.Channel, channelInfo.Name, isInitialRecording)
 			return nil // Don't return error, let the retry handle it
 		}
