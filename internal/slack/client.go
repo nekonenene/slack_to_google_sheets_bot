@@ -840,3 +840,145 @@ func (c *Client) FormatMessageText(text string) string {
 
 	return text
 }
+
+// getMessagesAfterTime retrieves messages posted after a specific time
+func (c *Client) getMessagesAfterTime(channelID, channelName string, afterTime time.Time) ([]*sheets.MessageRecord, error) {
+	var allRecords []*sheets.MessageRecord
+	cursor := ""
+	pageLimit := 200
+
+	log.Printf("Getting messages after %v for channel %s", afterTime, channelID)
+
+	for {
+		var historyResp HistoryResponse
+		err := retryWithBackoff(func() error {
+			var url string
+			if cursor == "" {
+				url = fmt.Sprintf("https://slack.com/api/conversations.history?channel=%s&limit=%d&oldest=%f", 
+					channelID, pageLimit, float64(afterTime.Unix()))
+			} else {
+				url = fmt.Sprintf("https://slack.com/api/conversations.history?channel=%s&limit=%d&oldest=%f&cursor=%s", 
+					channelID, pageLimit, float64(afterTime.Unix()), cursor)
+			}
+
+			req, err := http.NewRequest("GET", url, nil)
+			if err != nil {
+				return err
+			}
+
+			req.Header.Set("Authorization", "Bearer "+c.token)
+
+			resp, err := c.httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return err
+			}
+
+			if err := json.Unmarshal(body, &historyResp); err != nil {
+				return err
+			}
+
+			if !historyResp.OK {
+				return fmt.Errorf("slack API error: %s", string(body))
+			}
+
+			return nil
+		}, fmt.Sprintf("get messages after time for %s", channelID))
+
+		if err != nil {
+			return nil, err
+		}
+
+		// Convert messages to MessageRecord format
+		for _, msg := range historyResp.Messages {
+			if msg.Type == "message" {
+				// Parse timestamp
+				ts, err := strconv.ParseFloat(msg.Timestamp, 64)
+				if err != nil {
+					continue
+				}
+				msgTime := time.Unix(int64(ts), 0)
+
+				// Skip messages that are not newer than afterTime
+				if !msgTime.After(afterTime) {
+					continue
+				}
+
+				// Get user info (handle both human users and bots)
+				var userInfo *UserInfo
+				if msg.User != "" {
+					var err error
+					userInfo, err = c.GetUserInfo(msg.User)
+					if err != nil {
+						log.Printf("Error getting user info for %s: %v", msg.User, err)
+						userInfo = &UserInfo{ID: msg.User, Name: "Unknown", RealName: "Unknown"}
+					}
+				} else if msg.BotID != "" || msg.Username != "" {
+					botName := msg.Username
+					if msg.BotID != "" {
+						if botInfo, err := c.GetBotInfo(msg.BotID); err == nil {
+							botName = botInfo.Name
+						} else {
+							log.Printf("Could not get bot info for %s: %v", msg.BotID, err)
+							if msg.Username != "" {
+								botName = msg.Username
+							} else {
+								botName = "Bot"
+							}
+						}
+					} else if botName == "" {
+						botName = "Bot"
+					}
+					userInfo = &UserInfo{
+						ID:       msg.BotID,
+						Name:     botName,
+						RealName: botName,
+					}
+				} else {
+					userInfo = &UserInfo{ID: "", Name: "System", RealName: "System"}
+				}
+
+				formattedText := c.FormatMessageText(msg.Text)
+
+				record := &sheets.MessageRecord{
+					Timestamp:    msgTime,
+					Channel:      channelID,
+					ChannelName:  channelName,
+					User:         msg.User,
+					UserHandle:   userInfo.Name,
+					UserRealName: userInfo.RealName,
+					Text:         formattedText,
+					ThreadTS:     msg.ThreadTS,
+					MessageTS:    msg.Timestamp,
+				}
+
+				allRecords = append(allRecords, record)
+			}
+		}
+
+		// Check if we have more pages
+		if !historyResp.HasMore {
+			break
+		}
+
+		cursor = historyResp.ResponseMetadata.NextCursor
+		if cursor == "" {
+			break
+		}
+
+		time.Sleep(150 * time.Millisecond)
+	}
+
+	// Sort messages by timestamp (oldest first)
+	sort.Slice(allRecords, func(i, j int) bool {
+		return allRecords[i].Timestamp.Before(allRecords[j].Timestamp)
+	})
+
+	log.Printf("Retrieved %d new messages after %v from channel %s", len(allRecords), afterTime, channelID)
+	return allRecords, nil
+}

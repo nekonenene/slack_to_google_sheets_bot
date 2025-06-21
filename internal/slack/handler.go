@@ -24,6 +24,9 @@ var (
 	recentMutex           = sync.Mutex{}
 	recentMemberJoins     = make(map[string]time.Time)
 	recentMemberJoinMutex = sync.Mutex{}
+	historyInProgress     = make(map[string]bool)
+	historyStartTime      = make(map[string]time.Time)
+	historyProgressMutex  = sync.Mutex{}
 )
 
 func HandleEvent(cfg *config.Config, event *Event) error {
@@ -132,6 +135,15 @@ func HandleEvent(cfg *config.Config, event *Event) error {
 	if event.Event.Text == "" {
 		return nil
 	}
+
+	// Skip message recording if history retrieval is in progress for this channel
+	historyProgressMutex.Lock()
+	if historyInProgress[event.Event.Channel] {
+		historyProgressMutex.Unlock()
+		log.Printf("Skipping message recording for channel %s - history retrieval in progress", event.Event.Channel)
+		return nil
+	}
+	historyProgressMutex.Unlock()
 
 	// Skip messages that are app mentions to avoid duplicate processing
 	// (app_mention events are already handled above)
@@ -287,6 +299,20 @@ func handleMemberJoined(cfg *config.Config, event *Event) error {
 			return err
 		}
 
+		// Set history retrieval in progress flag with start time
+		historyProgressMutex.Lock()
+		historyInProgress[event.Event.Channel] = true
+		historyStartTime[event.Event.Channel] = time.Now()
+		historyProgressMutex.Unlock()
+
+		// Ensure flag is cleared when function exits
+		defer func() {
+			historyProgressMutex.Lock()
+			delete(historyInProgress, event.Event.Channel)
+			delete(historyStartTime, event.Event.Channel)
+			historyProgressMutex.Unlock()
+		}()
+
 		// Get channel history with progress tracking
 		progressMgr := progress.NewManager()
 
@@ -345,6 +371,23 @@ func handleMemberJoined(cfg *config.Config, event *Event) error {
 			// Delete progress file after successful completion
 			if err := progressMgr.DeleteProgress(event.Event.Channel); err != nil {
 				log.Printf("Warning: Could not delete progress file: %v", err)
+			}
+
+			// Get any new messages that arrived during history retrieval
+			historyProgressMutex.Lock()
+			startTime := historyStartTime[event.Event.Channel]
+			historyProgressMutex.Unlock()
+
+			newMessages, err := slackClient.getMessagesAfterTime(event.Event.Channel, channelInfo.Name, startTime)
+			if err != nil {
+				log.Printf("Warning: Could not get new messages after history retrieval: %v", err)
+			} else if len(newMessages) > 0 {
+				log.Printf("Found %d new messages during history retrieval, adding them", len(newMessages))
+				if err := sheetsClient.WriteBatchMessages(cfg.SpreadsheetID, newMessages); err != nil {
+					log.Printf("Warning: Could not write new messages after history retrieval: %v", err)
+				} else {
+					log.Printf("Successfully added %d new messages after history retrieval", len(newMessages))
+				}
 			}
 
 			processedCount = len(records)
@@ -463,6 +506,20 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 		log.Printf("Sheet reset completed for channel %s", channelInfo.Name)
 	}
 
+	// Set history retrieval in progress flag with start time
+	historyProgressMutex.Lock()
+	historyInProgress[event.Event.Channel] = true
+	historyStartTime[event.Event.Channel] = time.Now()
+	historyProgressMutex.Unlock()
+
+	// Ensure flag is cleared when function exits
+	defer func() {
+		historyProgressMutex.Lock()
+		delete(historyInProgress, event.Event.Channel)
+		delete(historyStartTime, event.Event.Channel)
+		historyProgressMutex.Unlock()
+	}()
+
 	// Get channel history with progress tracking
 	progressMgr := progress.NewManager()
 
@@ -528,6 +585,23 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 	// Delete progress file after successful completion
 	if err := progressMgr.DeleteProgress(event.Event.Channel); err != nil {
 		log.Printf("Warning: Could not delete progress file: %v", err)
+	}
+
+	// Get any new messages that arrived during history retrieval
+	historyProgressMutex.Lock()
+	startTime := historyStartTime[event.Event.Channel]
+	historyProgressMutex.Unlock()
+
+	newMessages, err := slackClient.getMessagesAfterTime(event.Event.Channel, channelInfo.Name, startTime)
+	if err != nil {
+		log.Printf("Warning: Could not get new messages after history retrieval: %v", err)
+	} else if len(newMessages) > 0 {
+		log.Printf("Found %d new messages during history retrieval, adding them", len(newMessages))
+		if err := sheetsClient.WriteBatchMessages(cfg.SpreadsheetID, newMessages); err != nil {
+			log.Printf("Warning: Could not write new messages after history retrieval: %v", err)
+		} else {
+			log.Printf("Successfully added %d new messages after history retrieval", len(newMessages))
+		}
 	}
 
 	processedCount = len(records)
