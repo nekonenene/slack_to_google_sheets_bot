@@ -372,10 +372,6 @@ func performHistoryRetrieval(cfg *config.Config, slackClient *Client, event *Eve
 	// Check if there's existing progress
 	if progressMgr.HasProgress(event.Event.Channel) {
 		log.Printf("Found existing progress for channel %s, resuming...", event.Event.Channel)
-		resumeMessage := "🔄 前回の処理を再開しています..."
-		if err := slackClient.SendMessage(event.Event.Channel, resumeMessage); err != nil {
-			log.Printf("Error sending resume message: %v", err)
-		}
 	}
 
 	records, err := slackClient.GetChannelHistoryWithProgress(event.Event.Channel, channelInfo.Name, 0, progressMgr)
