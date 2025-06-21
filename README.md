@@ -84,7 +84,7 @@ Automatically records posts from channels where the bot is invited.
     **Where to find these values**:
     - `SLACK_BOT_TOKEN`: From Slack app → OAuth & Permissions → Bot User OAuth Token
     - `SLACK_SIGNING_SECRET`: From Slack app → Basic Information → Signing Secret
-    - `GOOGLE_SHEETS_CREDENTIALS`: Path to your downloaded `credentials.json` file
+    - `GOOGLE_SHEETS_CREDENTIALS`: Body of `credentials.json` file
     - `GOOGLE_SPREADSHEET_ID`: From your Google Sheets URL (the long ID between `/d/` and `/edit`)
     - `PORT`: The port your server will run on (55999 is recommended)
 
