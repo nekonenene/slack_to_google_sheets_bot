@@ -390,13 +390,17 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 		log.Printf("Error recording mention message: %v", err)
 	}
 
-	// Send acknowledgment message
-	var ackMessage string
-	if isResetRequest {
-		ackMessage = fmt.Sprintf("🔄 シートをリセットして過去のメッセージ履歴を再取得しています... (#%s)", channelInfo.Name)
-	} else {
-		ackMessage = fmt.Sprintf("📚 過去のメッセージ履歴を取得しています... (#%s)", channelInfo.Name)
+	// If not a reset request, just respond with instruction and return
+	if !isResetRequest {
+		ackMessage := "🤖 このチャンネルの記録を取得し直すには「Reset!」とメンションしてください"
+		if err := slackClient.SendMessage(event.Event.Channel, ackMessage); err != nil {
+			log.Printf("Error sending acknowledgment message: %v", err)
+		}
+		return nil
 	}
+
+	// Send acknowledgment message for reset request
+	ackMessage := fmt.Sprintf("🔄 シートをリセットして過去のメッセージ履歴を再取得しています... (#%s)", channelInfo.Name)
 	if err := slackClient.SendMessage(event.Event.Channel, ackMessage); err != nil {
 		log.Printf("Error sending acknowledgment message: %v", err)
 	}
