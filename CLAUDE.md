@@ -8,6 +8,7 @@ Go-based Slack bot that automatically records channel messages to Google Sheets 
 - `internal/slack/`: Slack API client with retry logic and caching  
 - `internal/sheets/`: Google Sheets API client with batch operations
 - `internal/config/`: Environment configuration management
+- `internal/progress/`: Progress tracking for resumable channel history retrieval
 
 ## Key Features
 - **Auto-recording**: Records all channel messages to dedicated sheets
@@ -20,13 +21,9 @@ Go-based Slack bot that automatically records channel messages to Google Sheets 
 ## Code Style
 - **Indentation**: Tabs (4-space display)
 - **Encoding**: UTF-8, LF endings, trim trailing whitespace
-- **Go**: Run `go fmt` after changes
-- **Build**: Use `go build -o build/slack-bot .` (not root directory)
+- **File endings**: All files must end with a newline character
+- **Documentation**: All exported functions and methods must have godoc comments in Japanese
+- **Go formatting**: Always run `go fmt` after code changes
+- **Build output**: All binaries must be built to `build/` directory using `go build -o build/slack-bot .`
 - **Rate limits**: Built-in delays and retry logic for API calls
 - **Git commit message**: Must be one line
-
-## Development Commands
-- Build: `make build` or `go build -o build/slack-bot .`
-- Deploy: `make deploy` (auto-deploy with file watching)
-- Test: `make test`
-- Service: `make status/start/stop/restart/logs`
