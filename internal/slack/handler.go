@@ -301,22 +301,6 @@ func scheduleHistoryRetry(cfg *config.Config, channelID, channelName string, isI
 	}()
 }
 
-// retryMemberJoinedHistory retries the member joined history retrieval
-func retryMemberJoinedHistory(cfg *config.Config, event *Event, channelName string) error {
-	slackClient := NewClient(cfg.SlackBotToken)
-
-	// Get channel information
-	channelInfo := &ChannelInfo{ID: event.Event.Channel, Name: channelName}
-	if channelName == "" {
-		if info, err := slackClient.GetChannelInfo(event.Event.Channel); err == nil {
-			channelInfo = info
-		}
-	}
-
-	// Call the original member joined logic (without the initial setup)
-	return performHistoryRetrieval(cfg, slackClient, event, channelInfo, true)
-}
-
 // retryMemberJoinedHistoryWithStartTime retries the member joined history retrieval with preserved start time
 func retryMemberJoinedHistoryWithStartTime(cfg *config.Config, event *Event, channelName string, originalStartTime time.Time) error {
 	slackClient := NewClient(cfg.SlackBotToken)
@@ -331,22 +315,6 @@ func retryMemberJoinedHistoryWithStartTime(cfg *config.Config, event *Event, cha
 
 	// Call the history retrieval with preserved start time
 	return performHistoryRetrievalWithStartTime(cfg, slackClient, event, channelInfo, true, originalStartTime)
-}
-
-// retryAppMentionHistory retries the app mention history retrieval
-func retryAppMentionHistory(cfg *config.Config, event *Event, channelName string) error {
-	slackClient := NewClient(cfg.SlackBotToken)
-
-	// Get channel information
-	channelInfo := &ChannelInfo{ID: event.Event.Channel, Name: channelName}
-	if channelName == "" {
-		if info, err := slackClient.GetChannelInfo(event.Event.Channel); err == nil {
-			channelInfo = info
-		}
-	}
-
-	// Call the original app mention logic (without reset handling)
-	return performHistoryRetrieval(cfg, slackClient, event, channelInfo, false)
 }
 
 // retryAppMentionHistoryWithStartTime retries the app mention history retrieval with preserved start time
