@@ -21,6 +21,7 @@ type Client struct {
 	httpClient   *http.Client
 	userCache    map[string]*UserInfo
 	channelCache map[string]*ChannelInfo
+	botCache     map[string]*BotInfo
 }
 
 type UserInfo struct {
@@ -30,6 +31,11 @@ type UserInfo struct {
 }
 
 type ChannelInfo struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type BotInfo struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 }
@@ -44,12 +50,18 @@ type ChannelResponse struct {
 	Channel ChannelInfo `json:"channel"`
 }
 
+type BotResponse struct {
+	OK  bool    `json:"ok"`
+	Bot BotInfo `json:"bot"`
+}
+
 func NewClient(token string) *Client {
 	return &Client{
 		token:        token,
 		httpClient:   &http.Client{},
 		userCache:    make(map[string]*UserInfo),
 		channelCache: make(map[string]*ChannelInfo),
+		botCache:     make(map[string]*BotInfo),
 	}
 }
 
@@ -193,6 +205,68 @@ func (c *Client) GetChannelInfo(channelID string) (*ChannelInfo, error) {
 	return result, nil
 }
 
+// GetBotInfo retrieves bot information from Slack API with caching and retry logic.
+//
+// Args:
+//   - botID: Slack bot ID (e.g., "B123456789")
+//
+// Returns:
+//   - *BotInfo: Bot information including name
+//   - error: API error or network failure after 4 retry attempts
+func (c *Client) GetBotInfo(botID string) (*BotInfo, error) {
+	// Check cache first
+	if bot, exists := c.botCache[botID]; exists {
+		return bot, nil
+	}
+
+	var result *BotInfo
+	err := retryWithBackoff(func() error {
+		// Rate limiting: small delay between API calls
+		time.Sleep(100 * time.Millisecond)
+
+		url := fmt.Sprintf("https://slack.com/api/bots.info?bot=%s", botID)
+
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return err
+		}
+
+		req.Header.Set("Authorization", "Bearer "+c.token)
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+
+		var botResp BotResponse
+		if err := json.Unmarshal(body, &botResp); err != nil {
+			return err
+		}
+
+		if !botResp.OK {
+			return fmt.Errorf("slack API error: %s", string(body))
+		}
+
+		result = &botResp.Bot
+		return nil
+	}, fmt.Sprintf("get bot info for %s", botID))
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache the result
+	c.botCache[botID] = result
+
+	return result, nil
+}
+
 func (c *Client) SendMessage(channel, text string) error {
 	return retryWithBackoff(func() error {
 		url := "https://slack.com/api/chat.postMessage"
@@ -256,6 +330,8 @@ type HistoryMessage struct {
 	Text      string `json:"text"`
 	Timestamp string `json:"ts"`
 	ThreadTS  string `json:"thread_ts,omitempty"`
+	BotID     string `json:"bot_id,omitempty"`
+	Username  string `json:"username,omitempty"`
 }
 
 func (c *Client) GetChannelHistory(channelID string, limit int) ([]HistoryMessage, error) {
@@ -520,11 +596,43 @@ func (c *Client) GetChannelHistoryWithProgress(channelID, channelName string, li
 		var pageRecords []*sheets.MessageRecord
 		for _, msg := range historyResp.Messages {
 			if msg.Type == "message" {
-				// Get user info
-				userInfo, err := c.GetUserInfo(msg.User)
-				if err != nil {
-					log.Printf("Error getting user info for %s: %v", msg.User, err)
-					userInfo = &UserInfo{ID: msg.User, Name: "Unknown", RealName: "Unknown"}
+				// Get user info (handle both human users and bots)
+				var userInfo *UserInfo
+				if msg.User != "" {
+					// Human user message
+					var err error
+					userInfo, err = c.GetUserInfo(msg.User)
+					if err != nil {
+						log.Printf("Error getting user info for %s: %v", msg.User, err)
+						userInfo = &UserInfo{ID: msg.User, Name: "Unknown", RealName: "Unknown"}
+					}
+				} else if msg.BotID != "" || msg.Username != "" {
+					// Bot message - try to get bot information from API
+					botName := msg.Username
+					if msg.BotID != "" {
+						// Try to get actual bot name from API
+						if botInfo, err := c.GetBotInfo(msg.BotID); err == nil {
+							botName = botInfo.Name
+						} else {
+							log.Printf("Could not get bot info for %s: %v", msg.BotID, err)
+							// Fallback to username or "Bot"
+							if msg.Username != "" {
+								botName = msg.Username
+							} else {
+								botName = "Bot"
+							}
+						}
+					} else if botName == "" {
+						botName = "Bot"
+					}
+					userInfo = &UserInfo{
+						ID:       msg.BotID,
+						Name:     botName,
+						RealName: botName,
+					}
+				} else {
+					// System message or unknown
+					userInfo = &UserInfo{ID: "", Name: "System", RealName: "System"}
 				}
 
 				// Parse timestamp
@@ -567,10 +675,43 @@ func (c *Client) GetChannelHistoryWithProgress(channelID, channelName string, li
 				// Convert thread replies to MessageRecord format
 				for _, reply := range threadReplies {
 					if reply.Type == "message" {
-						userInfo, err := c.GetUserInfo(reply.User)
-						if err != nil {
-							log.Printf("Error getting user info for %s: %v", reply.User, err)
-							userInfo = &UserInfo{ID: reply.User, Name: "Unknown", RealName: "Unknown"}
+						// Get user info (handle both human users and bots)
+						var userInfo *UserInfo
+						if reply.User != "" {
+							// Human user message
+							var err error
+							userInfo, err = c.GetUserInfo(reply.User)
+							if err != nil {
+								log.Printf("Error getting user info for %s: %v", reply.User, err)
+								userInfo = &UserInfo{ID: reply.User, Name: "Unknown", RealName: "Unknown"}
+							}
+						} else if reply.BotID != "" || reply.Username != "" {
+							// Bot message - try to get bot information from API
+							botName := reply.Username
+							if reply.BotID != "" {
+								// Try to get actual bot name from API
+								if botInfo, err := c.GetBotInfo(reply.BotID); err == nil {
+									botName = botInfo.Name
+								} else {
+									log.Printf("Could not get bot info for %s: %v", reply.BotID, err)
+									// Fallback to username or "Bot"
+									if reply.Username != "" {
+										botName = reply.Username
+									} else {
+										botName = "Bot"
+									}
+								}
+							} else if botName == "" {
+								botName = "Bot"
+							}
+							userInfo = &UserInfo{
+								ID:       reply.BotID,
+								Name:     botName,
+								RealName: botName,
+							}
+						} else {
+							// System message or unknown
+							userInfo = &UserInfo{ID: "", Name: "System", RealName: "System"}
 						}
 
 						ts, err := strconv.ParseFloat(reply.Timestamp, 64)
