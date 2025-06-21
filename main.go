@@ -87,11 +87,18 @@ func handleSlackEvents(cfg *config.Config) http.HandlerFunc {
 
 		// Handle events
 		if event.Type == "event_callback" {
-			if err := slack.HandleEvent(cfg, &event); err != nil {
-				log.Printf("Error handling event: %v", err)
-				http.Error(w, "Internal server error", http.StatusInternalServerError)
-				return
-			}
+			// Response 200 OK immediately because HandleEvent usually takes time
+			// Slack Events API requires 200 OK within 3 seconds : https://api.slack.com/apis/events-api#responding
+			w.WriteHeader(http.StatusOK)
+
+			// Handle the event asynchronously
+			go func() {
+				if err := slack.HandleEvent(cfg, &event); err != nil {
+					log.Printf("Error handling event: %v", err)
+				}
+			}()
+
+			return
 		}
 
 		w.WriteHeader(http.StatusOK)
