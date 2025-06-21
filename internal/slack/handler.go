@@ -51,12 +51,12 @@ func HandleEvent(cfg *config.Config, event *Event) error {
 		recentMemberJoinMutex.Lock()
 		channelKey := fmt.Sprintf("channel_%s", event.Event.Channel)
 		if lastJoinTime, exists := recentMemberJoins[channelKey]; exists {
-			if time.Since(lastJoinTime) < 90*time.Second {
+			if time.Since(lastJoinTime) < 120*time.Second {
 				recentMemberJoinMutex.Unlock()
 				processingMutex.Lock()
 				delete(processingEvents, eventKey)
 				processingMutex.Unlock()
-				log.Printf("Recent member join detected in channel %s (within 90s), skipping", event.Event.Channel)
+				log.Printf("Recent member join detected in channel %s (within 120s), skipping", event.Event.Channel)
 				return nil
 			}
 		}
@@ -96,15 +96,15 @@ func HandleEvent(cfg *config.Config, event *Event) error {
 		processingEvents[eventKey] = true
 		processingMutex.Unlock()
 
-		// Check for recent mentions in same channel (within 90 seconds) or if blocked by member join
+		// Check for recent mentions in same channel (within 120 seconds) or if blocked by member join
 		recentMutex.Lock()
 		if lastMentionTime, exists := recentMentions[event.Event.Channel]; exists {
-			if time.Since(lastMentionTime) < 90*time.Second {
+			if time.Since(lastMentionTime) < 120*time.Second {
 				recentMutex.Unlock()
 				processingMutex.Lock()
 				delete(processingEvents, eventKey)
 				processingMutex.Unlock()
-				log.Printf("Recent mention detected in channel %s (within 90s) or blocked by member join, skipping", event.Event.Channel)
+				log.Printf("Recent mention detected in channel %s (within 120s) or blocked by member join, skipping", event.Event.Channel)
 				return nil
 			}
 		}
@@ -272,9 +272,8 @@ func handleMemberJoined(cfg *config.Config, event *Event) error {
 			return err
 		}
 
-		// Get channel history for initial recording using search API
-		slackUserClient := NewClient(cfg.SlackUserToken)
-		messages, err := slackClient.GetChannelHistoryBySearch(event.Event.Channel, "", slackUserClient)
+		// Get channel history for initial recording (all messages)
+		messages, err := slackClient.GetChannelHistory(event.Event.Channel, 0)
 		if err != nil {
 			log.Printf("Error getting channel history for initial recording: %v", err)
 			errorMessage := "❌ チャンネル履歴の取得に失敗しました。"
@@ -344,8 +343,8 @@ func handleMemberJoined(cfg *config.Config, event *Event) error {
 				records = append(records, record)
 			}
 
-			// Write all messages using streaming approach (this ensures chronological order)
-			if err := sheetsClient.WriteMessagesStreaming(cfg.SpreadsheetID, records); err != nil {
+			// Write all messages in batch (this ensures chronological order)
+			if err := sheetsClient.WriteBatchMessages(cfg.SpreadsheetID, records); err != nil {
 				log.Printf("Error writing batch messages to sheets after retries: %v", err)
 				errorMessage := fmt.Sprintf("❌ 初回記録のスプレッドシートへの記録に失敗しました（4回試行後）\n"+
 					"エラー: %v\n"+
@@ -469,19 +468,8 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 		log.Printf("Sheet reset completed for channel %s", channelInfo.Name)
 	}
 
-	// Get channel history using search API for better performance
-	// First, check if we should continue from last recorded timestamp
-	sheetName := fmt.Sprintf("%s-%s", channelInfo.Name, event.Event.Channel)
-	latestTS := ""
-	if !isResetRequest {
-		// Try to get the latest timestamp from the sheet to continue from there
-		if latestTS, err = sheetsClient.GetLatestTimestamp(cfg.SpreadsheetID, sheetName); err != nil {
-			log.Printf("Could not get latest timestamp (sheet might be new): %v", err)
-		}
-	}
-
-	slackUserClient := NewClient(cfg.SlackUserToken)
-	messages, err := slackClient.GetChannelHistoryBySearch(event.Event.Channel, latestTS, slackUserClient)
+	// Get channel history (all messages)
+	messages, err := slackClient.GetChannelHistory(event.Event.Channel, 0)
 	if err != nil {
 		log.Printf("Error getting channel history: %v", err)
 		errorMessage := "❌ チャンネル履歴の取得に失敗しました。"
@@ -547,11 +535,11 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 		records = append(records, record)
 	}
 
-	// Write all messages using streaming approach (this ensures chronological order)
+	// Write all messages in batch (this ensures chronological order)
 	var processedCount int
 	var failureCount int
 
-	if err := sheetsClient.WriteMessagesStreaming(cfg.SpreadsheetID, records); err != nil {
+	if err := sheetsClient.WriteBatchMessages(cfg.SpreadsheetID, records); err != nil {
 		log.Printf("Error writing batch messages to sheets after retries: %v", err)
 		errorMessage := fmt.Sprintf("❌ スプレッドシートへの記録に失敗しました（4回試行後）\n"+
 			"エラー: %v\n"+

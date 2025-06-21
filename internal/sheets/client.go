@@ -29,19 +29,6 @@ type Client struct {
 	service *sheets.Service
 }
 
-// NewClient creates a new Google Sheets API client using service account credentials.
-//
-// Args:
-//   - credentialsJSON: Either a file path to credentials.json or the JSON content itself
-//
-// Returns:
-//   - *Client: Initialized Google Sheets client with retry logic
-//   - error: Authentication error or invalid credentials
-//
-// Example:
-//   client, err := NewClient("./credentials.json")
-//   // or
-//   client, err := NewClient(`{"type":"service_account",...}`)
 func NewClient(credentialsJSON string) (*Client, error) {
 	ctx := context.Background()
 
@@ -119,19 +106,6 @@ type MessageRecord struct {
 	MessageTS    string
 }
 
-// WriteMessage writes a single message record to Google Sheets with optimized API usage.
-// Uses single-read operation for efficiency and handles header validation.
-//
-// Args:
-//   - spreadsheetID: Google Sheets spreadsheet ID
-//   - record: Message record containing all fields to write
-//
-// Returns:
-//   - error: Sheets API error or network failure after 4 retry attempts
-//
-// Example:
-//   record := &MessageRecord{Timestamp: time.Now(), Text: "Hello", ...}
-//   err := client.WriteMessage("1abc123...", record)
 func (c *Client) WriteMessage(spreadsheetID string, record *MessageRecord) error {
 	// Determine sheet name: "ChannelName-ChannelID"
 	sheetName := fmt.Sprintf("%s-%s", record.ChannelName, record.Channel)
@@ -569,163 +543,6 @@ func (c *Client) ClearSheetData(spreadsheetID, sheetName string) error {
 	}
 
 	log.Printf("Cleared all data from sheet %s (keeping headers)", sheetName)
-	return nil
-}
-
-func (c *Client) GetLatestTimestamp(spreadsheetID, sheetName string) (string, error) {
-	var latestTS string
-	err := retryWithBackoff(func() error {
-		// Get all data from timestamp column (G)
-		resp, err := c.service.Spreadsheets.Values.Get(spreadsheetID, sheetName+"!G:G").Do()
-		if err != nil {
-			return err
-		}
-
-		// Find the latest (largest) timestamp, skipping header
-		for i, row := range resp.Values {
-			if i == 0 {
-				continue // Skip header row
-			}
-			if len(row) > 0 && row[0] != nil {
-				if ts, ok := row[0].(string); ok && ts != "" {
-					if latestTS == "" || ts > latestTS {
-						latestTS = ts
-					}
-				}
-			}
-		}
-
-		return nil
-	}, fmt.Sprintf("get latest timestamp from sheet %s", sheetName))
-
-	if err != nil {
-		return "", err
-	}
-
-	log.Printf("Latest timestamp in sheet %s: %s", sheetName, latestTS)
-	return latestTS, nil
-}
-
-// WriteMessagesStreaming writes multiple message records to Google Sheets efficiently.
-// Filters duplicates, sorts by timestamp, and writes in batches for optimal performance.
-//
-// Args:
-//   - spreadsheetID: Google Sheets spreadsheet ID
-//   - records: Slice of message records to write
-//
-// Returns:
-//   - error: Sheets API error or network failure after 4 retry attempts
-//
-// Example:
-//   records := []*MessageRecord{record1, record2, record3}
-//   err := client.WriteMessagesStreaming("1abc123...", records)
-func (c *Client) WriteMessagesStreaming(spreadsheetID string, records []*MessageRecord) error {
-	if len(records) == 0 {
-		return nil
-	}
-
-	// Use the first record to determine sheet name (all should be same channel)
-	sheetName := fmt.Sprintf("%s-%s", records[0].ChannelName, records[0].Channel)
-
-	// Ensure sheet exists
-	if err := c.ensureChannelSheetExists(spreadsheetID, records[0].Channel, records[0].ChannelName); err != nil {
-		return err
-	}
-
-	// Get existing sheet data once
-	sheetData, err := c.getSheetData(spreadsheetID, sheetName)
-	if err != nil {
-		return fmt.Errorf("failed to get sheet data: %v", err)
-	}
-
-	// Check and fix header if needed
-	if err := c.ensureCorrectHeader(spreadsheetID, sheetName, sheetData); err != nil {
-		log.Printf("Warning: could not ensure correct header: %v", err)
-		// Reload data after header fix
-		sheetData, err = c.getSheetData(spreadsheetID, sheetName)
-		if err != nil {
-			return fmt.Errorf("failed to reload sheet data after header fix: %v", err)
-		}
-	}
-
-	// Filter out duplicate messages
-	var newRecords []*MessageRecord
-	for _, record := range records {
-		if !c.messageExistsInData(sheetData, record.MessageTS) {
-			newRecords = append(newRecords, record)
-		}
-	}
-
-	if len(newRecords) == 0 {
-		log.Printf("All %d messages already exist in sheet %s, skipping batch", len(records), sheetName)
-		return nil
-	}
-
-	// Sort new records by timestamp (should already be sorted from search API)
-	sort.Slice(newRecords, func(i, j int) bool {
-		return newRecords[i].Timestamp.Before(newRecords[j].Timestamp)
-	})
-
-	// Get starting row number
-	startRowNumber := c.getNextRowNumberFromData(sheetData)
-
-	// Prepare values for batch insert
-	var values [][]interface{}
-	for i, record := range newRecords {
-		rowNumber := startRowNumber + i
-
-		// Find thread parent No. if this is a thread reply
-		threadParentNo := ""
-		if record.ThreadTS != "" && record.ThreadTS != record.MessageTS {
-			// Check in existing data first
-			if parentNo := c.findThreadParentNoInData(sheetData, record.ThreadTS); parentNo > 0 {
-				threadParentNo = fmt.Sprintf("%d", parentNo)
-			} else {
-				// Check in the current batch being processed
-				for j := 0; j < i; j++ {
-					if newRecords[j].MessageTS == record.ThreadTS {
-						threadParentNo = fmt.Sprintf("%d", startRowNumber+j)
-						break
-					}
-				}
-			}
-		}
-
-		values = append(values, []interface{}{
-			rowNumber,
-			record.Timestamp.Format("2006-01-02 15:04:05"),
-			record.UserHandle,
-			record.UserRealName,
-			record.Text,
-			threadParentNo,
-			record.MessageTS,
-		})
-	}
-
-	// Write batch to sheet
-	if len(values) > 0 {
-		err := retryWithBackoff(func() error {
-			valueRange := &sheets.ValueRange{
-				Values: values,
-			}
-
-			_, err := c.service.Spreadsheets.Values.Append(
-				spreadsheetID,
-				sheetName+"!A:G",
-				valueRange,
-			).ValueInputOption("RAW").Do()
-
-			return err
-		}, fmt.Sprintf("stream write %d messages to sheet %s", len(values), sheetName))
-
-		if err != nil {
-			return fmt.Errorf("unable to stream write data to sheet: %v", err)
-		}
-
-		log.Printf("Successfully streamed %d new messages to sheet %s (filtered %d duplicates)", 
-			len(values), sheetName, len(records)-len(newRecords))
-	}
-
 	return nil
 }
 
