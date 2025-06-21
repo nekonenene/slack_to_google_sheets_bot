@@ -2,6 +2,9 @@
 
 Slack app that records channel posts to Google Sheets.
 
+Automatically records posts from channels where the bot is invited.
+
+
 ## Requirements
 
 - Go 1.24+
@@ -34,10 +37,11 @@ Slack app that records channel posts to Google Sheets.
     - Create a new project or select existing one
     - In the top navigation, make sure your project is selected
 
-2. **Enable Google Sheets API**:
+2. **Enable Required APIs**:
     - Go to **APIs & Services** → **Library**
-    - Search for "Google Sheets API"
-    - Click on it and press **Enable**
+    - Search for "Google Sheets API" and click **Enable**
+    - Search for "Google Drive API" and click **Enable**
+    - **Note**: Google Drive API is required for the "show me" command to grant spreadsheet access permissions
 
 3. **Create Service Account**:
     - Go to **APIs & Services** → **Credentials**
