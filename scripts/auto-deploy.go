@@ -155,7 +155,7 @@ func buildAndDeploy(remoteHost, remotePath, remoteUser string) {
 		log.Printf("%s⚠️  Could not verify service status: %s%s", ColorYellow, err, ColorReset)
 	}
 
-	log.Println("✅ Deploy completed successfully")
+	log.Printf("%s✅ Deploy completed successfully!%s", ColorGreen, ColorReset)
 }
 
 func deployEnvFile(remoteHost, remotePath, remoteUser, envFilePath string) {
