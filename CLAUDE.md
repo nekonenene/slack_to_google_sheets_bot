@@ -22,7 +22,7 @@ Go-based Slack bot that automatically records channel messages to Google Sheets 
 - **Indentation**: Tabs (4-space display)
 - **Encoding**: UTF-8, LF endings, trim trailing whitespace
 - **File endings**: All files must end with a newline character
-- **Documentation**: All exported functions and methods must have godoc comments
+- **Documentation**: All functions and constants must have godoc comments in English
 - **Go formatting**: Always run `go fmt` after code changes
 - **Build output**: All binaries must be built to `build/` directory using `go build -o build/slack-bot .`
 - **Rate limits**: Built-in delays and retry logic for API calls
