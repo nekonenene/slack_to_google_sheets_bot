@@ -176,22 +176,6 @@ func (c *Client) WriteMessage(spreadsheetID string, record *MessageRecord) error
 	return nil
 }
 
-func (c *Client) messageExistsInSheet(spreadsheetID, sheetName, messageTS string) (bool, error) {
-	// Get all message IDs from column G in the specific sheet
-	resp, err := c.service.Spreadsheets.Values.Get(spreadsheetID, sheetName+"!G:G").Do()
-	if err != nil {
-		return false, err
-	}
-
-	for _, row := range resp.Values {
-		if len(row) > 0 && row[0] == messageTS {
-			return true, nil
-		}
-	}
-
-	return false, nil
-}
-
 func (c *Client) ensureSheetExists(spreadsheetID, sheetName string) error {
 	// Get spreadsheet info
 	spreadsheet, err := c.service.Spreadsheets.Get(spreadsheetID).Do()
@@ -349,53 +333,6 @@ func (c *Client) ensureChannelSheetExists(spreadsheetID, channelID, channelName 
 
 	log.Printf("Sheet created successfully: '%s'", expectedSheetName)
 	return nil
-}
-
-func (c *Client) getNextRowNumber(spreadsheetID, sheetName string) (int, error) {
-	// Get all data to count existing rows
-	resp, err := c.service.Spreadsheets.Values.Get(spreadsheetID, sheetName+"!A:A").Do()
-	if err != nil {
-		return 1, err
-	}
-
-	// Count rows (subtract 1 for header row, then add 1 for next number)
-	rowCount := len(resp.Values)
-	if rowCount <= 1 {
-		return 1, nil // First data row after header
-	}
-
-	return rowCount, nil // This gives us the next row number
-}
-
-func (c *Client) findThreadParentNo(spreadsheetID, sheetName, threadTS string) (int, error) {
-	// Get message timestamps (column G) and row numbers (column A)
-	resp, err := c.service.Spreadsheets.Values.Get(spreadsheetID, sheetName+"!A:G").Do()
-	if err != nil {
-		return 0, err
-	}
-
-	// Skip header row (index 0) and search for the thread parent
-	for i, row := range resp.Values {
-		if i == 0 {
-			continue // Skip header
-		}
-
-		if len(row) >= 7 && row[6] == threadTS {
-			// Found the parent message, return its No. (column A)
-			if len(row) >= 1 {
-				if rowNo, ok := row[0].(float64); ok {
-					return int(rowNo), nil
-				}
-				if rowNoStr, ok := row[0].(string); ok {
-					if rowNo, err := strconv.Atoi(rowNoStr); err == nil {
-						return rowNo, nil
-					}
-				}
-			}
-		}
-	}
-
-	return 0, fmt.Errorf("thread parent not found")
 }
 
 func (c *Client) getSheetData(spreadsheetID, sheetName string) (*sheets.ValueRange, error) {
@@ -932,7 +869,7 @@ func (c *Client) UpdateMessage(spreadsheetID string, record *MessageRecord) erro
 		record.Timestamp.Format("2006-01-02 15:04:05"),
 		record.UserHandle,
 		record.UserRealName,
-		record.Text + " (edited)", // Mark as edited
+		record.Text,
 		threadParentNo,
 		record.MessageTS,
 	}
