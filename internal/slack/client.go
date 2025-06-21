@@ -8,8 +8,12 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"slack-to-google-sheets-bot/internal/progress"
+	"slack-to-google-sheets-bot/internal/sheets"
 )
 
 type Client struct {
@@ -419,6 +423,248 @@ func (c *Client) getThreadReplies(channelID, threadTS string) ([]HistoryMessage,
 	}
 
 	return allReplies, nil
+}
+
+// GetChannelHistoryWithProgress retrieves channel history with progress tracking and resumption capability
+func (c *Client) GetChannelHistoryWithProgress(channelID, channelName string, limit int, progressMgr *progress.Manager) ([]*sheets.MessageRecord, error) {
+	// Check for existing progress
+	existingProgress, err := progressMgr.LoadProgress(channelID)
+	if err != nil {
+		log.Printf("Error loading progress: %v", err)
+		existingProgress = nil
+	}
+
+	var cursor string
+	var allRecords []*sheets.MessageRecord
+	startTime := time.Now()
+
+	if existingProgress != nil {
+		log.Printf("Resuming channel history retrieval for %s from previous session", channelID)
+		cursor = existingProgress.LastCursor
+		allRecords = existingProgress.Messages
+		startTime = existingProgress.StartTime
+
+		if existingProgress.Phase == "completed" {
+			log.Printf("Channel history retrieval already completed for %s", channelID)
+			return allRecords, nil
+		}
+	} else {
+		log.Printf("Starting new channel history retrieval for %s", channelID)
+		// Create new progress
+		newProgress := &progress.ChannelProgress{
+			ChannelID:         channelID,
+			ChannelName:       channelName,
+			StartTime:         startTime,
+			LastUpdated:       startTime,
+			LastCursor:        "",
+			TotalMessages:     0,
+			ProcessedMessages: 0,
+			Messages:          []*sheets.MessageRecord{},
+			Phase:             "fetching",
+		}
+
+		if err := progressMgr.SaveProgress(newProgress); err != nil {
+			log.Printf("Warning: Could not save initial progress: %v", err)
+		}
+	}
+
+	pageLimit := 200 // Maximum per page
+	messageCount := 0
+
+	for {
+		var historyResp HistoryResponse
+		err := retryWithBackoff(func() error {
+			var url string
+			if cursor == "" {
+				url = fmt.Sprintf("https://slack.com/api/conversations.history?channel=%s&limit=%d", channelID, pageLimit)
+			} else {
+				url = fmt.Sprintf("https://slack.com/api/conversations.history?channel=%s&limit=%d&cursor=%s", channelID, pageLimit, cursor)
+			}
+
+			req, err := http.NewRequest("GET", url, nil)
+			if err != nil {
+				return err
+			}
+
+			req.Header.Set("Authorization", "Bearer "+c.token)
+
+			resp, err := c.httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return err
+			}
+
+			if err := json.Unmarshal(body, &historyResp); err != nil {
+				return err
+			}
+
+			if !historyResp.OK {
+				return fmt.Errorf("slack API error: %s", string(body))
+			}
+
+			return nil
+		}, fmt.Sprintf("get channel history page for %s", channelID))
+
+		if err != nil {
+			return nil, err
+		}
+
+		log.Printf("Retrieved %d messages in this page", len(historyResp.Messages))
+
+		// Convert messages to MessageRecord format and add to collection
+		var pageRecords []*sheets.MessageRecord
+		for _, msg := range historyResp.Messages {
+			if msg.Type == "message" {
+				// Get user info
+				userInfo, err := c.GetUserInfo(msg.User)
+				if err != nil {
+					log.Printf("Error getting user info for %s: %v", msg.User, err)
+					userInfo = &UserInfo{ID: msg.User, Name: "Unknown", RealName: "Unknown"}
+				}
+
+				// Parse timestamp
+				ts, err := strconv.ParseFloat(msg.Timestamp, 64)
+				if err != nil {
+					ts = float64(time.Now().Unix())
+				}
+				timestamp := time.Unix(int64(ts), 0)
+
+				// Format message text
+				formattedText := c.FormatMessageText(msg.Text)
+
+				record := &sheets.MessageRecord{
+					Timestamp:    timestamp,
+					Channel:      channelID,
+					ChannelName:  channelName,
+					User:         msg.User,
+					UserHandle:   userInfo.Name,
+					UserRealName: userInfo.RealName,
+					Text:         formattedText,
+					ThreadTS:     msg.ThreadTS,
+					MessageTS:    msg.Timestamp,
+				}
+
+				pageRecords = append(pageRecords, record)
+			}
+		}
+
+		// Get thread replies for each message with thread_ts
+		for _, msg := range historyResp.Messages {
+			if msg.ThreadTS != "" && msg.ThreadTS == msg.Timestamp {
+				// This is a parent message, get its replies
+				threadReplies, err := c.getThreadReplies(channelID, msg.ThreadTS)
+				if err != nil {
+					log.Printf("Error getting thread replies for %s: %v", msg.ThreadTS, err)
+					continue
+				}
+				log.Printf("Retrieved %d thread replies for message %s", len(threadReplies), msg.ThreadTS)
+
+				// Convert thread replies to MessageRecord format
+				for _, reply := range threadReplies {
+					if reply.Type == "message" {
+						userInfo, err := c.GetUserInfo(reply.User)
+						if err != nil {
+							log.Printf("Error getting user info for %s: %v", reply.User, err)
+							userInfo = &UserInfo{ID: reply.User, Name: "Unknown", RealName: "Unknown"}
+						}
+
+						ts, err := strconv.ParseFloat(reply.Timestamp, 64)
+						if err != nil {
+							ts = float64(time.Now().Unix())
+						}
+						timestamp := time.Unix(int64(ts), 0)
+
+						formattedText := c.FormatMessageText(reply.Text)
+
+						record := &sheets.MessageRecord{
+							Timestamp:    timestamp,
+							Channel:      channelID,
+							ChannelName:  channelName,
+							User:         reply.User,
+							UserHandle:   userInfo.Name,
+							UserRealName: userInfo.RealName,
+							Text:         formattedText,
+							ThreadTS:     reply.ThreadTS,
+							MessageTS:    reply.Timestamp,
+						}
+
+						pageRecords = append(pageRecords, record)
+					}
+				}
+			}
+		}
+
+		// Add page records to total collection
+		allRecords = append(allRecords, pageRecords...)
+		messageCount += len(pageRecords)
+
+		// Update progress
+		cursor = historyResp.ResponseMetadata.NextCursor
+		updateProgress := &progress.ChannelProgress{
+			ChannelID:         channelID,
+			ChannelName:       channelName,
+			StartTime:         startTime,
+			LastUpdated:       time.Now(),
+			LastCursor:        cursor,
+			TotalMessages:     messageCount, // This will be updated as we discover more
+			ProcessedMessages: messageCount,
+			Messages:          allRecords,
+			Phase:             "fetching",
+		}
+
+		if err := progressMgr.SaveProgress(updateProgress); err != nil {
+			log.Printf("Warning: Could not save progress: %v", err)
+		}
+
+		log.Printf("Progress: %d messages collected so far", messageCount)
+
+		// Check if we have more pages and haven't reached the limit
+		if !historyResp.HasMore || (limit > 0 && messageCount >= limit) {
+			break
+		}
+
+		if cursor == "" {
+			break
+		}
+
+		// Add rate limiting between requests
+		time.Sleep(150 * time.Millisecond)
+	}
+
+	// Sort messages by timestamp (oldest first)
+	sort.Slice(allRecords, func(i, j int) bool {
+		return allRecords[i].Timestamp.Before(allRecords[j].Timestamp)
+	})
+
+	// Apply limit if specified
+	if limit > 0 && len(allRecords) > limit {
+		allRecords = allRecords[:limit]
+	}
+
+	// Update final progress
+	finalProgress := &progress.ChannelProgress{
+		ChannelID:         channelID,
+		ChannelName:       channelName,
+		StartTime:         startTime,
+		LastUpdated:       time.Now(),
+		LastCursor:        "",
+		TotalMessages:     len(allRecords),
+		ProcessedMessages: len(allRecords),
+		Messages:          allRecords,
+		Phase:             "fetching_completed",
+	}
+
+	if err := progressMgr.SaveProgress(finalProgress); err != nil {
+		log.Printf("Warning: Could not save final progress: %v", err)
+	}
+
+	log.Printf("Retrieved %d total messages (including thread replies) from channel %s", len(allRecords), channelID)
+	return allRecords, nil
 }
 
 func (c *Client) FormatMessageText(text string) string {

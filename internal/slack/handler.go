@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"slack-to-google-sheets-bot/internal/config"
+	"slack-to-google-sheets-bot/internal/progress"
 	"slack-to-google-sheets-bot/internal/sheets"
 )
 
@@ -272,8 +273,19 @@ func handleMemberJoined(cfg *config.Config, event *Event) error {
 			return err
 		}
 
-		// Get channel history for initial recording (all messages)
-		messages, err := slackClient.GetChannelHistory(event.Event.Channel, 0)
+		// Get channel history with progress tracking
+		progressMgr := progress.NewManager()
+
+		// Check if there's existing progress
+		if progressMgr.HasProgress(event.Event.Channel) {
+			log.Printf("Found existing progress for channel %s, resuming...", event.Event.Channel)
+			resumeMessage := "🔄 前回の処理を再開しています..."
+			if err := slackClient.SendMessage(event.Event.Channel, resumeMessage); err != nil {
+				log.Printf("Error sending resume message: %v", err)
+			}
+		}
+
+		records, err := slackClient.GetChannelHistoryWithProgress(event.Event.Channel, channelInfo.Name, 0, progressMgr)
 		if err != nil {
 			log.Printf("Error getting channel history for initial recording: %v", err)
 			errorMessage := "❌ チャンネル履歴の取得に失敗しました。"
@@ -281,66 +293,21 @@ func handleMemberJoined(cfg *config.Config, event *Event) error {
 			return err
 		}
 
-		// Filter out bot messages (messages are already sorted oldest first)
-		var validMessages []HistoryMessage
-		for _, msg := range messages {
-			if msg.Type == "message" && msg.User != "" && msg.Text != "" {
-				validMessages = append(validMessages, msg)
-			}
-		}
-
 		processedCount := 0
 		failureCount := 0
 
-		if len(validMessages) > 0 {
+		if len(records) > 0 {
 			// Send progress message
-			progressMessage := fmt.Sprintf("📚 %d件のメッセージ履歴を記録しています...", len(validMessages))
+			progressMessage := fmt.Sprintf("📚 %d件のメッセージ履歴をスプレッドシートに記録しています...", len(records))
 			if err := slackClient.SendMessage(event.Event.Channel, progressMessage); err != nil {
 				log.Printf("Error sending progress message: %v", err)
 			}
 
-			log.Printf("Starting to process %d messages for initial recording in channel %s", len(validMessages), channelInfo.Name)
+			log.Printf("Starting to write %d messages to spreadsheet for initial recording in channel %s", len(records), channelInfo.Name)
 
-			// Prepare all message records for batch processing
-			var records []*sheets.MessageRecord
-			for i, msg := range validMessages {
-				previewText := msg.Text
-				if len(previewText) > 50 {
-					previewText = previewText[:50] + "..."
-				}
-				log.Printf("Preparing message %d/%d: %s", i+1, len(validMessages), previewText)
-
-				// Get user info
-				userInfo, err := slackClient.GetUserInfo(msg.User)
-				if err != nil {
-					log.Printf("Error getting user info for %s: %v", msg.User, err)
-					userInfo = &UserInfo{ID: msg.User, Name: "Unknown", RealName: "Unknown"}
-				}
-
-				// Parse timestamp
-				ts, err := strconv.ParseFloat(msg.Timestamp, 64)
-				if err != nil {
-					ts = float64(time.Now().Unix())
-				}
-				timestamp := time.Unix(int64(ts), 0)
-
-				// Format message text (convert mentions and channels)
-				formattedText := slackClient.FormatMessageText(msg.Text)
-
-				// Create message record
-				record := &sheets.MessageRecord{
-					Timestamp:    timestamp,
-					Channel:      event.Event.Channel,
-					ChannelName:  channelInfo.Name,
-					User:         msg.User,
-					UserHandle:   userInfo.Name,
-					UserRealName: userInfo.RealName,
-					Text:         formattedText,
-					ThreadTS:     msg.ThreadTS,
-					MessageTS:    msg.Timestamp,
-				}
-
-				records = append(records, record)
+			// Update progress phase to writing
+			if err := progressMgr.UpdatePhase(event.Event.Channel, "writing"); err != nil {
+				log.Printf("Warning: Could not update progress phase: %v", err)
 			}
 
 			// Write all messages in batch (this ensures chronological order)
@@ -356,6 +323,16 @@ func handleMemberJoined(cfg *config.Config, event *Event) error {
 				return err
 			}
 
+			// Mark progress as completed and clean up
+			if err := progressMgr.UpdatePhase(event.Event.Channel, "completed"); err != nil {
+				log.Printf("Warning: Could not update progress phase: %v", err)
+			}
+
+			// Delete progress file after successful completion
+			if err := progressMgr.DeleteProgress(event.Event.Channel); err != nil {
+				log.Printf("Warning: Could not delete progress file: %v", err)
+			}
+
 			processedCount = len(records)
 			failureCount = 0
 		}
@@ -364,7 +341,7 @@ func handleMemberJoined(cfg *config.Config, event *Event) error {
 		sheetURL := fmt.Sprintf("https://docs.google.com/spreadsheets/d/%s", cfg.SpreadsheetID)
 		var completionMessage string
 
-		if len(validMessages) == 0 {
+		if len(records) == 0 {
 			completionMessage = fmt.Sprintf("✅ スプレッドシートの初期化が完了しました！\n"+
 				"記録するメッセージはありませんでした。\n"+
 				"記録先: %s", sheetURL)
@@ -468,8 +445,26 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 		log.Printf("Sheet reset completed for channel %s", channelInfo.Name)
 	}
 
-	// Get channel history (all messages)
-	messages, err := slackClient.GetChannelHistory(event.Event.Channel, 0)
+	// Get channel history with progress tracking
+	progressMgr := progress.NewManager()
+
+	// For reset requests, clean up any existing progress first
+	if isResetRequest {
+		if err := progressMgr.DeleteProgress(event.Event.Channel); err != nil {
+			log.Printf("Warning: Could not clean up existing progress: %v", err)
+		}
+	}
+
+	// Check if there's existing progress
+	if progressMgr.HasProgress(event.Event.Channel) {
+		log.Printf("Found existing progress for channel %s, resuming...", event.Event.Channel)
+		resumeMessage := "🔄 前回の処理を再開しています..."
+		if err := slackClient.SendMessage(event.Event.Channel, resumeMessage); err != nil {
+			log.Printf("Error sending resume message: %v", err)
+		}
+	}
+
+	records, err := slackClient.GetChannelHistoryWithProgress(event.Event.Channel, channelInfo.Name, 0, progressMgr)
 	if err != nil {
 		log.Printf("Error getting channel history: %v", err)
 		errorMessage := "❌ チャンネル履歴の取得に失敗しました。"
@@ -477,62 +472,17 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 		return err
 	}
 
-	// Filter out bot messages (messages are already sorted oldest first)
-	var validMessages []HistoryMessage
-	for _, msg := range messages {
-		if msg.Type == "message" && msg.User != "" && msg.Text != "" {
-			validMessages = append(validMessages, msg)
-		}
-	}
-
-	if len(validMessages) == 0 {
+	if len(records) == 0 {
 		noMessagesMsg := "ℹ️ 記録するメッセージが見つかりませんでした。"
 		slackClient.SendMessage(event.Event.Channel, noMessagesMsg)
 		return nil
 	}
 
-	log.Printf("Starting to process %d messages for channel %s", len(validMessages), channelInfo.Name)
+	log.Printf("Starting to write %d messages to spreadsheet for channel %s", len(records), channelInfo.Name)
 
-	// Prepare all message records for batch processing
-	var records []*sheets.MessageRecord
-	for i, msg := range validMessages {
-		previewText := msg.Text
-		if len(previewText) > 50 {
-			previewText = previewText[:50] + "..."
-		}
-		log.Printf("Preparing message %d/%d: %s", i+1, len(validMessages), previewText)
-
-		// Get user info
-		userInfo, err := slackClient.GetUserInfo(msg.User)
-		if err != nil {
-			log.Printf("Error getting user info for %s: %v", msg.User, err)
-			userInfo = &UserInfo{ID: msg.User, Name: "Unknown", RealName: "Unknown"}
-		}
-
-		// Parse timestamp
-		ts, err := strconv.ParseFloat(msg.Timestamp, 64)
-		if err != nil {
-			ts = float64(time.Now().Unix())
-		}
-		timestamp := time.Unix(int64(ts), 0)
-
-		// Format message text (convert mentions and channels)
-		formattedText := slackClient.FormatMessageText(msg.Text)
-
-		// Create message record
-		record := &sheets.MessageRecord{
-			Timestamp:    timestamp,
-			Channel:      event.Event.Channel,
-			ChannelName:  channelInfo.Name,
-			User:         msg.User,
-			UserHandle:   userInfo.Name,
-			UserRealName: userInfo.RealName,
-			Text:         formattedText,
-			ThreadTS:     msg.ThreadTS,
-			MessageTS:    msg.Timestamp,
-		}
-
-		records = append(records, record)
+	// Update progress phase to writing
+	if err := progressMgr.UpdatePhase(event.Event.Channel, "writing"); err != nil {
+		log.Printf("Warning: Could not update progress phase: %v", err)
 	}
 
 	// Write all messages in batch (this ensures chronological order)
@@ -550,6 +500,16 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 			log.Printf("Error sending failure notification after retries: %v", notifyErr)
 		}
 		return err
+	}
+
+	// Mark progress as completed and clean up
+	if err := progressMgr.UpdatePhase(event.Event.Channel, "completed"); err != nil {
+		log.Printf("Warning: Could not update progress phase: %v", err)
+	}
+
+	// Delete progress file after successful completion
+	if err := progressMgr.DeleteProgress(event.Event.Channel); err != nil {
+		log.Printf("Warning: Could not delete progress file: %v", err)
 	}
 
 	processedCount = len(records)

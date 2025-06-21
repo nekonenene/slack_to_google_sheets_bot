@@ -653,3 +653,138 @@ func (c *Client) WriteBatchMessages(spreadsheetID string, records []*MessageReco
 
 	return nil
 }
+
+// WriteMessagesStreamingWithProgress writes messages in batches with progress tracking for memory efficiency
+func (c *Client) WriteMessagesStreamingWithProgress(spreadsheetID string, records []*MessageRecord, progressCallback func(written, total int)) error {
+	if len(records) == 0 {
+		return nil
+	}
+
+	// Use the first record to determine sheet name (all should be same channel)
+	sheetName := fmt.Sprintf("%s-%s", records[0].ChannelName, records[0].Channel)
+
+	// Ensure sheet exists
+	if err := c.ensureChannelSheetExists(spreadsheetID, records[0].Channel, records[0].ChannelName); err != nil {
+		return err
+	}
+
+	// Get existing sheet data once
+	sheetData, err := c.getSheetData(spreadsheetID, sheetName)
+	if err != nil {
+		return fmt.Errorf("failed to get sheet data: %v", err)
+	}
+
+	// Check and fix header if needed
+	if err := c.ensureCorrectHeader(spreadsheetID, sheetName, sheetData); err != nil {
+		log.Printf("Warning: could not ensure correct header: %v", err)
+		// Reload data after header fix
+		sheetData, err = c.getSheetData(spreadsheetID, sheetName)
+		if err != nil {
+			return fmt.Errorf("failed to reload sheet data after header fix: %v", err)
+		}
+	}
+
+	// Filter out duplicate messages
+	var newRecords []*MessageRecord
+	for _, record := range records {
+		if !c.messageExistsInData(sheetData, record.MessageTS) {
+			newRecords = append(newRecords, record)
+		}
+	}
+
+	if len(newRecords) == 0 {
+		log.Printf("All %d messages already exist in sheet %s, skipping batch", len(records), sheetName)
+		if progressCallback != nil {
+			progressCallback(len(records), len(records))
+		}
+		return nil
+	}
+
+	// Sort new records by timestamp (should already be sorted from search API)
+	sort.Slice(newRecords, func(i, j int) bool {
+		return newRecords[i].Timestamp.Before(newRecords[j].Timestamp)
+	})
+
+	// Write in smaller batches to manage memory
+	batchSize := 50 // Smaller batches for better memory management
+	startRowNumber := c.getNextRowNumberFromData(sheetData)
+	totalWritten := 0
+
+	for i := 0; i < len(newRecords); i += batchSize {
+		end := i + batchSize
+		if end > len(newRecords) {
+			end = len(newRecords)
+		}
+
+		batch := newRecords[i:end]
+
+		// Prepare values for this batch
+		var values [][]interface{}
+		for j, record := range batch {
+			rowNumber := startRowNumber + totalWritten + j
+
+			// Find thread parent No. if this is a thread reply
+			threadParentNo := ""
+			if record.ThreadTS != "" && record.ThreadTS != record.MessageTS {
+				// Check in existing data first
+				if parentNo := c.findThreadParentNoInData(sheetData, record.ThreadTS); parentNo > 0 {
+					threadParentNo = fmt.Sprintf("%d", parentNo)
+				} else {
+					// Check in the current total batch being processed
+					for k := 0; k < totalWritten+j; k++ {
+						if newRecords[k].MessageTS == record.ThreadTS {
+							threadParentNo = fmt.Sprintf("%d", startRowNumber+k)
+							break
+						}
+					}
+				}
+			}
+
+			values = append(values, []interface{}{
+				rowNumber,
+				record.Timestamp.Format("2006-01-02 15:04:05"),
+				record.UserHandle,
+				record.UserRealName,
+				record.Text,
+				threadParentNo,
+				record.MessageTS,
+			})
+		}
+
+		// Write this batch to sheet
+		if len(values) > 0 {
+			err := retryWithBackoff(func() error {
+				valueRange := &sheets.ValueRange{
+					Values: values,
+				}
+
+				_, err := c.service.Spreadsheets.Values.Append(
+					spreadsheetID,
+					sheetName+"!A:G",
+					valueRange,
+				).ValueInputOption("RAW").Do()
+
+				return err
+			}, fmt.Sprintf("stream write batch %d-%d to sheet %s", i+1, end, sheetName))
+
+			if err != nil {
+				return fmt.Errorf("unable to stream write batch to sheet: %v", err)
+			}
+
+			totalWritten += len(batch)
+
+			// Call progress callback
+			if progressCallback != nil {
+				progressCallback(totalWritten, len(newRecords))
+			}
+
+			log.Printf("Successfully wrote batch %d-%d (%d messages) to sheet %s",
+				i+1, end, len(batch), sheetName)
+		}
+	}
+
+	log.Printf("Successfully streamed %d new messages to sheet %s (filtered %d duplicates)",
+		totalWritten, sheetName, len(records)-len(newRecords))
+
+	return nil
+}

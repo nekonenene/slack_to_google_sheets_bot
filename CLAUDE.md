@@ -23,6 +23,7 @@ Go-based Slack bot that automatically records channel messages to Google Sheets 
 - **Go**: Run `go fmt` after changes
 - **Build**: Use `go build -o build/slack-bot .` (not root directory)
 - **Rate limits**: Built-in delays and retry logic for API calls
+- **Git commit message**: Must be one line
 
 ## Development Commands
 - Build: `make build` or `go build -o build/slack-bot .`
