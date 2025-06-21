@@ -23,7 +23,7 @@ builds:
       - arm64
     ldflags:
       - -s -w
-    binary: {{ .ProjectName }}
+    binary: "{{ .ProjectName }}"
 
 archives:
   - format: tar.gz
