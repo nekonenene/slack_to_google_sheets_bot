@@ -1,25 +1,39 @@
 display_information:
   name: Slack to Google Sheets Bot
   description: Records channel posts to Google Sheets
-  background_color: "#4a90e2"
+  background_color: "#27631b"
+  long_description: |
+    SlackのテキストメッセージをGoogleスプレッドシートに自動記録してくれるアプリです。
+
+    チャンネルに招待されると、そのチャンネルの過去の投稿を取得し始めます。（投稿数によっては非常に時間がかかります）
+    取得が完了するとスプレッドシートに記録し、以降、チャンネルにメッセージの投稿があるたびに記録し続けます。
+    この bot に対して「show me <メールアドレス>」の形でメンションをおこなうと、スプレッドシートの閲覧許可をメールアドレスに対して付与してくれます。
 features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: false
+    messages_tab_read_only_enabled: false
   bot_user:
     display_name: SheetsRecorder
-    always_online: false
+    always_online: true
 oauth_config:
   scopes:
     bot:
-      - channels:read
+      - app_mentions:read
       - channels:history
-      - users:read
+      - channels:read
       - chat:write
+      - groups:history
+      - groups:read
+      - users:read
 settings:
   event_subscriptions:
     request_url: http://your-server-ip:55999/slack/events
     bot_events:
-      - member_joined_channel
       - app_mention
+      - member_joined_channel
       - message.channels
+      - message.groups
   org_deploy_enabled: false
   socket_mode_enabled: false
   token_rotation_enabled: false
