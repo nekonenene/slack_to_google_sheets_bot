@@ -392,11 +392,6 @@ func performHistoryRetrievalWithStartTime(cfg *config.Config, slackClient *Clien
 
 		// Check if this is a rate limit error
 		if isRateLimitError(err) {
-			rateLimitMessage := "⏳ Slack APIのレート制限により一時的に処理が中断されました。2分後に自動的に再開します"
-			if err := slackClient.SendMessage(event.Event.Channel, rateLimitMessage); err != nil {
-				log.Printf("Error sending rate limit message: %v", err)
-			}
-
 			// Schedule retry after 2 minutes with preserved original start time
 			scheduleHistoryRetry(cfg, event.Event.Channel, channelInfo.Name, isInitialRecording, originalStartTime, 2*time.Minute)
 			return nil // Don't return error, let the retry handle it
