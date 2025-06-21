@@ -11,7 +11,7 @@ fi
 
 REMOTE_HOST=$1
 REMOTE_USER=$2
-REMOTE_PATH="/home/$REMOTE_USER/slack-to-google-sheets-bot"
+REMOTE_PATH="/home/$REMOTE_USER/slack-to-google-sheets-bot-dev"
 
 echo "🚀 Setting up remote development environment: $REMOTE_USER@$REMOTE_HOST"
 echo ""
@@ -57,19 +57,19 @@ ssh $REMOTE_USER@$REMOTE_HOST "
 "
 
 # Copy systemd service file
-scp systemd/slack-to-google-sheets-bot.service $REMOTE_USER@$REMOTE_HOST:/tmp/
+scp systemd/slack-to-google-sheets-bot-dev.service $REMOTE_USER@$REMOTE_HOST:/tmp/
 
 echo "Configuring systemd service (sudo password may be required)..."
 ssh -t $REMOTE_USER@$REMOTE_HOST "
     # Update paths in service file
-    sed -i 's|/home/server-username/slack-to-google-sheets-bot|$REMOTE_PATH|g' /tmp/slack-to-google-sheets-bot.service
-    sed -i 's|User=server-username|User=$REMOTE_USER|g' /tmp/slack-to-google-sheets-bot.service
+    sed -i 's|/home/server-username/slack-to-google-sheets-bot-dev|$REMOTE_PATH|g' /tmp/slack-to-google-sheets-bot-dev.service
+    sed -i 's|User=server-username|User=$REMOTE_USER|g' /tmp/slack-to-google-sheets-bot-dev.service
 
     # Install service (requires sudo)
     sudo mkdir -p /etc/systemd/system/
-    sudo mv /tmp/slack-to-google-sheets-bot.service /etc/systemd/system/
+    sudo mv /tmp/slack-to-google-sheets-bot-dev.service /etc/systemd/system/
     sudo systemctl daemon-reload
-    sudo systemctl enable slack-to-google-sheets-bot
+    sudo systemctl enable slack-to-google-sheets-bot-dev
 
     # Configure firewall (ufw)
     echo '🔥 Configuring firewall...'

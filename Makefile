@@ -62,11 +62,11 @@ test:
 .PHONY: deploy
 deploy: build-linux
 	@if [ ! -f deploy.env ]; then echo "deploy.env not found. Copy from deploy.env.example"; exit 1; fi
-	@source deploy.env && rsync -avz --delete build/slack-to-google-sheets-bot $$REMOTE_USER@$$REMOTE_HOST:/home/$$REMOTE_USER/slack-to-google-sheets-bot/
-	@source deploy.env && ssh $$REMOTE_USER@$$REMOTE_HOST "sudo systemctl restart slack-to-google-sheets-bot || /home/$$REMOTE_USER/slack-to-google-sheets-bot/slack-to-google-sheets-bot &"
+	@source deploy.env && rsync -avz --delete build/slack-to-google-sheets-bot $$REMOTE_USER@$$REMOTE_HOST:/home/$$REMOTE_USER/slack-to-google-sheets-bot-dev/
+	@source deploy.env && ssh $$REMOTE_USER@$$REMOTE_HOST "sudo systemctl restart slack-to-google-sheets-bot-dev || /home/$$REMOTE_USER/slack-to-google-sheets-bot-dev/slack-to-google-sheets-bot &"
 
 # Watch files and auto-deploy on changes
 .PHONY: watch-deploy
 watch-deploy:
 	@if [ ! -f deploy.env ]; then echo "deploy.env not found. Copy from deploy.env.example"; exit 1; fi
-	@source deploy.env && go run scripts/auto-deploy.go $$REMOTE_HOST /home/$$REMOTE_USER/slack-to-google-sheets-bot $$REMOTE_USER
+	@source deploy.env && go run scripts/auto-deploy.go $$REMOTE_HOST /home/$$REMOTE_USER/slack-to-google-sheets-bot-dev $$REMOTE_USER

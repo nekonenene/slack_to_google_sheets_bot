@@ -139,7 +139,7 @@ func buildAndDeploy(remoteHost, remotePath, remoteUser string) {
 
 	// Start or restart service on remote server (using cached password)
 	log.Println("Starting/restarting service...")
-	serviceCommand := "systemctl is-active slack-to-google-sheets-bot >/dev/null 2>&1 && sudo systemctl restart slack-to-google-sheets-bot || sudo systemctl start slack-to-google-sheets-bot"
+	serviceCommand := "systemctl is-active slack-to-google-sheets-bot-dev >/dev/null 2>&1 && sudo systemctl restart slack-to-google-sheets-bot-dev || sudo systemctl start slack-to-google-sheets-bot-dev"
 
 	if err := runSudoCommand(remoteUser, remoteHost, serviceCommand); err != nil {
 		log.Printf("%s❌ Service start/restart failed: %s%s", ColorRed, err, ColorReset)
@@ -149,7 +149,7 @@ func buildAndDeploy(remoteHost, remotePath, remoteUser string) {
 
 	// Verify service is running
 	log.Println("Verifying service status...")
-	verifyCommand := "systemctl is-active slack-to-google-sheets-bot && echo 'Service is active' || echo 'Service is not active'"
+	verifyCommand := "systemctl is-active slack-to-google-sheets-bot-dev && echo 'Service is active' || echo 'Service is not active'"
 
 	if err := runSudoCommand(remoteUser, remoteHost, verifyCommand); err != nil {
 		log.Printf("%s⚠️  Could not verify service status: %s%s", ColorYellow, err, ColorReset)
@@ -184,7 +184,7 @@ func deployEnvFile(remoteHost, remotePath, remoteUser, envFilePath string) {
 
 	// Start or restart service on remote server (using cached password)
 	log.Println("Restarting service after environment file update...")
-	serviceCommand := "systemctl is-active slack-to-google-sheets-bot >/dev/null 2>&1 && systemctl restart slack-to-google-sheets-bot || systemctl start slack-to-google-sheets-bot"
+	serviceCommand := "systemctl is-active slack-to-google-sheets-bot-dev >/dev/null 2>&1 && systemctl restart slack-to-google-sheets-bot-dev || systemctl start slack-to-google-sheets-bot-dev"
 
 	if err := runSudoCommand(remoteUser, remoteHost, serviceCommand); err != nil {
 		log.Printf("%s❌ Service start/restart failed: %s%s", ColorRed, err, ColorReset)

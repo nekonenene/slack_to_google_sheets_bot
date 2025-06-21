@@ -11,7 +11,7 @@ fi
 
 REMOTE_HOST=$1
 REMOTE_USER=$2
-REMOTE_PATH="/home/$REMOTE_USER/slack-to-google-sheets-bot"
+REMOTE_PATH="/home/$REMOTE_USER/slack-to-google-sheets-bot-dev"
 
 echo "🧹 Cleaning up remote server: $REMOTE_USER@$REMOTE_HOST"
 echo ""
@@ -34,9 +34,9 @@ fi
 
 echo "Stopping and disabling service (sudo password may be required)..."
 ssh -t $REMOTE_USER@$REMOTE_HOST "
-    sudo systemctl stop slack-to-google-sheets-bot 2>/dev/null || echo 'Service was not running'
-    sudo systemctl disable slack-to-google-sheets-bot 2>/dev/null || echo 'Service was not enabled'
-    sudo rm -f /etc/systemd/system/slack-to-google-sheets-bot.service
+    sudo systemctl stop slack-to-google-sheets-bot-dev 2>/dev/null || echo 'Service was not running'
+    sudo systemctl disable slack-to-google-sheets-bot-dev 2>/dev/null || echo 'Service was not enabled'
+    sudo rm -f /etc/systemd/system/slack-to-google-sheets-bot-dev.service
     sudo systemctl daemon-reload
 "
 
@@ -71,7 +71,7 @@ echo ""
 echo "✅ Remote server cleanup completed!"
 echo ""
 echo "🧹 Cleanup Summary:"
-echo "   - systemd service: slack-to-google-sheets-bot (removed)"
+echo "   - systemd service: slack-to-google-sheets-bot-dev (removed)"
 echo "   - Firewall rule for port 55999/tcp (removed if ufw was available)"
 echo "   - Application directory: $REMOTE_PATH (removed)"
 echo ""

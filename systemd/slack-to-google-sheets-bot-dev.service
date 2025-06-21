@@ -1,0 +1,17 @@
+[Unit]
+Description=Slack to Google Sheets Bot (for Development)
+After=network.target
+
+[Service]
+Type=simple
+User=server-username
+WorkingDirectory=/home/server-username/slack-to-google-sheets-bot-dev
+ExecStart=/home/server-username/slack-to-google-sheets-bot/slack-to-google-sheets-bot-dev
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+EnvironmentFile=/home/server-username/slack-to-google-sheets-bot-dev/.env
+
+[Install]
+WantedBy=multi-user.target
