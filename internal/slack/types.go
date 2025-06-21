@@ -11,26 +11,26 @@ type Event struct {
 }
 
 type EventData struct {
-	Type        string           `json:"type"`
-	Channel     string           `json:"channel,omitempty"`
-	User        string           `json:"user,omitempty"`
-	Text        string           `json:"text,omitempty"`
-	Timestamp   string           `json:"ts,omitempty"`
-	ThreadTS    string           `json:"thread_ts,omitempty"`
-	EventTS     string           `json:"event_ts,omitempty"`
-	ChannelType string           `json:"channel_type,omitempty"`
-	Inviter     string           `json:"inviter,omitempty"`
-	Message     *MessageChanged  `json:"message,omitempty"`     // For message_changed events
-	Subtype     string           `json:"subtype,omitempty"`     // For message subtypes
+	Type        string          `json:"type"`
+	Channel     string          `json:"channel,omitempty"`
+	User        string          `json:"user,omitempty"`
+	Text        string          `json:"text,omitempty"`
+	Timestamp   string          `json:"ts,omitempty"`
+	ThreadTS    string          `json:"thread_ts,omitempty"`
+	EventTS     string          `json:"event_ts,omitempty"`
+	ChannelType string          `json:"channel_type,omitempty"`
+	Inviter     string          `json:"inviter,omitempty"`
+	Message     *MessageChanged `json:"message,omitempty"` // For message_changed events
+	Subtype     string          `json:"subtype,omitempty"` // For message subtypes
 }
 
 // MessageChanged represents the structure of a changed message in Slack
 type MessageChanged struct {
-	Type      string `json:"type"`
-	User      string `json:"user,omitempty"`
-	Text      string `json:"text,omitempty"`
-	Timestamp string `json:"ts,omitempty"`
-	ThreadTS  string `json:"thread_ts,omitempty"`
+	Type      string    `json:"type"`
+	User      string    `json:"user,omitempty"`
+	Text      string    `json:"text,omitempty"`
+	Timestamp string    `json:"ts,omitempty"`
+	ThreadTS  string    `json:"thread_ts,omitempty"`
 	Edited    *EditInfo `json:"edited,omitempty"`
 }
 
