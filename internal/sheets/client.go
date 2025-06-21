@@ -875,3 +875,88 @@ func (c *Client) WriteBatchMessagesFromRow2(spreadsheetID string, records []*Mes
 
 	return nil
 }
+
+// UpdateMessage updates an existing message in the sheet based on message timestamp
+func (c *Client) UpdateMessage(spreadsheetID string, record *MessageRecord) error {
+	// Determine sheet name: "ChannelName-ChannelID"
+	sheetName := fmt.Sprintf("%s-%s", record.ChannelName, record.Channel)
+
+	// Get sheet data to find the message
+	sheetData, err := c.getSheetData(spreadsheetID, sheetName)
+	if err != nil {
+		return fmt.Errorf("failed to get sheet data: %v", err)
+	}
+
+	// Find the row containing the message to update
+	var targetRow int = -1
+	for i, row := range sheetData.Values {
+		if i == 0 {
+			continue // Skip header
+		}
+		if len(row) > 6 && row[6] == record.MessageTS {
+			targetRow = i + 1 // Convert to 1-based indexing
+			break
+		}
+	}
+
+	if targetRow == -1 {
+		log.Printf("Message %s not found in sheet %s for update", record.MessageTS, sheetName)
+		return fmt.Errorf("message not found for update")
+	}
+
+	// Get the existing row number to preserve it (ensure it's a number, not a string)
+	existingRowData := sheetData.Values[targetRow-1] // Convert back to 0-based for array access
+	var rowNumber int = targetRow - 1                // Default fallback
+	if len(existingRowData) > 0 {
+		// Try to parse the existing row number as an integer
+		if existingRowNum, ok := existingRowData[0].(float64); ok {
+			rowNumber = int(existingRowNum)
+		} else if existingRowStr, ok := existingRowData[0].(string); ok {
+			if parsedNum, err := strconv.Atoi(existingRowStr); err == nil {
+				rowNumber = parsedNum
+			}
+		}
+	}
+
+	// Find thread parent No. if this is a thread reply (preserve existing logic)
+	threadParentNo := ""
+	if record.ThreadTS != "" && record.ThreadTS != record.MessageTS {
+		if parentNo := c.findThreadParentNoInData(sheetData, record.ThreadTS); parentNo > 0 {
+			threadParentNo = fmt.Sprintf("%d", parentNo)
+		}
+	}
+
+	// Prepare updated values
+	values := []interface{}{
+		rowNumber, // Preserve original row number
+		record.Timestamp.Format("2006-01-02 15:04:05"),
+		record.UserHandle,
+		record.UserRealName,
+		record.Text + " (edited)", // Mark as edited
+		threadParentNo,
+		record.MessageTS,
+	}
+
+	// Update the specific row
+	err = retryWithBackoff(func() error {
+		valueRange := &sheets.ValueRange{
+			Values: [][]interface{}{values},
+		}
+
+		updateRange := fmt.Sprintf("%s!A%d:G%d", sheetName, targetRow, targetRow)
+		_, err := c.service.Spreadsheets.Values.Update(
+			spreadsheetID,
+			updateRange,
+			valueRange,
+		).ValueInputOption("RAW").Do()
+
+		return err
+	}, fmt.Sprintf("update message %s in sheet %s", record.MessageTS, sheetName))
+
+	if err != nil {
+		return fmt.Errorf("unable to update message in sheet: %v", err)
+	}
+
+	log.Printf("Successfully updated message %s in sheet %s", record.MessageTS, sheetName)
+	return nil
+}

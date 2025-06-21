@@ -125,7 +125,13 @@ func HandleEvent(cfg *config.Config, event *Event) error {
 		return handleAppMention(cfg, event)
 	}
 
-	// Only handle message events
+	// Handle message changed events (edits)
+	if event.Event.Type == "message" && event.Event.Subtype == "message_changed" {
+		log.Printf("Processing message_changed event for channel: %s", event.Event.Channel)
+		return handleMessageChanged(cfg, event)
+	}
+
+	// Only handle regular message events
 	if event.Event.Type != "message" {
 		log.Printf("Ignoring event type: %s", event.Event.Type)
 		return nil
@@ -654,4 +660,91 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 
 	// Use the common history retrieval function
 	return performHistoryRetrieval(cfg, slackClient, event, channelInfo, false)
+}
+
+// handleMessageChanged handles message edit events
+func handleMessageChanged(cfg *config.Config, event *Event) error {
+	// Check if Google Sheets is configured
+	if cfg.GoogleSheetsCredentials == "" || cfg.SpreadsheetID == "" {
+		log.Printf("Google Sheets not configured, ignoring message edit")
+		return nil
+	}
+
+	// Ensure we have the changed message data
+	if event.Event.Message == nil {
+		log.Printf("No message data in message_changed event")
+		return nil
+	}
+
+	changedMessage := event.Event.Message
+
+	// Skip if this is not actually an edit (some subtypes we don't care about)
+	if changedMessage.Edited == nil {
+		log.Printf("Message change event without edit info, skipping")
+		return nil
+	}
+
+	// Create Slack client
+	slackClient := NewClient(cfg.SlackBotToken)
+
+	// Get channel information
+	channelInfo, err := slackClient.GetChannelInfo(event.Event.Channel)
+	if err != nil {
+		log.Printf("Error getting channel info for message edit: %v", err)
+		channelInfo = &ChannelInfo{ID: event.Event.Channel, Name: "Unknown"}
+	}
+
+	// Get user information for the edited message
+	var userInfo *UserInfo
+	if changedMessage.User != "" {
+		userInfo, err = slackClient.GetUserInfo(changedMessage.User)
+		if err != nil {
+			log.Printf("Error getting user info for edited message: %v", err)
+			userInfo = &UserInfo{ID: changedMessage.User, Name: "Unknown", RealName: "Unknown"}
+		}
+	} else {
+		userInfo = &UserInfo{ID: "", Name: "Bot", RealName: "Bot"}
+	}
+
+	// Parse timestamp
+	ts, err := strconv.ParseFloat(changedMessage.Timestamp, 64)
+	if err != nil {
+		ts = float64(time.Now().Unix())
+	}
+	timestamp := time.Unix(int64(ts), 0)
+
+	// Format message text
+	formattedText := slackClient.FormatMessageText(changedMessage.Text)
+
+	// Create message record for the edited message
+	record := sheets.MessageRecord{
+		Timestamp:    timestamp,
+		Channel:      event.Event.Channel,
+		ChannelName:  channelInfo.Name,
+		User:         changedMessage.User,
+		UserHandle:   userInfo.Name,
+		UserRealName: userInfo.RealName,
+		Text:         formattedText,
+		ThreadTS:     changedMessage.ThreadTS,
+		MessageTS:    changedMessage.Timestamp,
+	}
+
+	// Create Google Sheets client and update the message
+	sheetsClient, err := sheets.NewClient(cfg.GoogleSheetsCredentials)
+	if err != nil {
+		log.Printf("Error creating Google Sheets client for message edit: %v", err)
+		return err
+	}
+
+	// Update the message in the sheet
+	if err := sheetsClient.UpdateMessage(cfg.SpreadsheetID, &record); err != nil {
+		log.Printf("Error updating edited message in Google Sheets: %v", err)
+		return err
+	}
+
+	log.Printf("✅ Message edit recorded in #%s by %s: %s",
+		record.ChannelName, record.UserHandle,
+		truncateText(record.Text, 50))
+
+	return nil
 }
