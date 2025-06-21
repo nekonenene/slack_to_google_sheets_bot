@@ -92,7 +92,7 @@ func main() {
 			if !ok {
 				return
 			}
-			log.Printf("Error: %s", err)
+			log.Printf("%s❌ Watcher Error: %s%s", ColorRed, err, ColorReset)
 		}
 	}
 }
@@ -105,7 +105,7 @@ func buildAndDeploy(remoteHost, remotePath, remoteUser string) {
 	buildCmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64")
 
 	if err := buildCmd.Run(); err != nil {
-		log.Printf("Build failed: %s", err)
+		log.Printf("%s❌ Build failed: %s%s", ColorRed, err, ColorReset)
 		return
 	}
 
@@ -119,9 +119,9 @@ func buildAndDeploy(remoteHost, remotePath, remoteUser string) {
 	// Capture both stdout and stderr
 	output, err := rsyncCmd.CombinedOutput()
 	if err != nil {
-		log.Printf("Deploy failed: %s", err)
-		log.Printf("Rsync output: %s", string(output))
-		log.Printf("Check SSH connection to %s@%s", remoteUser, remoteHost)
+		log.Printf("%s❌ Deploy failed: %s%s", ColorRed, err, ColorReset)
+		log.Printf("%sRsync output: %s%s", ColorRed, string(output), ColorReset)
+		log.Printf("%sCheck SSH connection to %s@%s%s", ColorRed, remoteUser, remoteHost, ColorReset)
 		return
 	}
 
@@ -133,7 +133,7 @@ func buildAndDeploy(remoteHost, remotePath, remoteUser string) {
 			fmt.Sprintf("%s@%s:%s/", remoteUser, remoteHost, remotePath))
 
 		if err := envRsyncCmd.Run(); err != nil {
-			log.Printf("Warning: .env file sync failed: %s", err)
+			log.Printf("%s⚠️  Warning: .env file sync failed: %s%s", ColorYellow, err, ColorReset)
 		}
 	}
 
@@ -142,8 +142,8 @@ func buildAndDeploy(remoteHost, remotePath, remoteUser string) {
 	serviceCommand := "systemctl is-active slack-to-google-sheets-bot >/dev/null 2>&1 && sudo systemctl restart slack-to-google-sheets-bot || sudo systemctl start slack-to-google-sheets-bot"
 
 	if err := runSudoCommand(remoteUser, remoteHost, serviceCommand); err != nil {
-		log.Printf("Service start/restart failed: %s", err)
-		log.Printf("Check SSH connection and sudo permissions for %s@%s", remoteUser, remoteHost)
+		log.Printf("%s❌ Service start/restart failed: %s%s", ColorRed, err, ColorReset)
+		log.Printf("%sCheck SSH connection and sudo permissions for %s@%s%s", ColorRed, remoteUser, remoteHost, ColorReset)
 		return
 	}
 
@@ -152,7 +152,7 @@ func buildAndDeploy(remoteHost, remotePath, remoteUser string) {
 	verifyCommand := "systemctl is-active slack-to-google-sheets-bot && echo 'Service is active' || echo 'Service is not active'"
 
 	if err := runSudoCommand(remoteUser, remoteHost, verifyCommand); err != nil {
-		log.Printf("⚠️  Could not verify service status: %s", err)
+		log.Printf("%s⚠️  Could not verify service status: %s%s", ColorYellow, err, ColorReset)
 	}
 
 	log.Println("✅ Deploy completed successfully")
@@ -164,7 +164,7 @@ func deployEnvFile(remoteHost, remotePath, remoteUser, envFilePath string) {
 
 	// Check if file exists
 	if _, err := os.Stat(envFilePath); os.IsNotExist(err) {
-		log.Printf("Environment file not found: %s", envFilePath)
+		log.Printf("%s❌ Environment file not found: %s%s", ColorRed, envFilePath, ColorReset)
 		return
 	}
 
@@ -176,9 +176,9 @@ func deployEnvFile(remoteHost, remotePath, remoteUser, envFilePath string) {
 	// Capture both stdout and stderr
 	output, err := rsyncCmd.CombinedOutput()
 	if err != nil {
-		log.Printf("Environment file deploy failed: %s", err)
-		log.Printf("Rsync output: %s", string(output))
-		log.Printf("Check SSH connection to %s@%s", remoteUser, remoteHost)
+		log.Printf("%s❌ Environment file deploy failed: %s%s", ColorRed, err, ColorReset)
+		log.Printf("%sRsync output: %s%s", ColorRed, string(output), ColorReset)
+		log.Printf("%sCheck SSH connection to %s@%s%s", ColorRed, remoteUser, remoteHost, ColorReset)
 		return
 	}
 
@@ -187,8 +187,8 @@ func deployEnvFile(remoteHost, remotePath, remoteUser, envFilePath string) {
 	serviceCommand := "systemctl is-active slack-to-google-sheets-bot >/dev/null 2>&1 && systemctl restart slack-to-google-sheets-bot || systemctl start slack-to-google-sheets-bot"
 
 	if err := runSudoCommand(remoteUser, remoteHost, serviceCommand); err != nil {
-		log.Printf("Service start/restart failed: %s", err)
-		log.Printf("Check SSH connection and sudo permissions for %s@%s", remoteUser, remoteHost)
+		log.Printf("%s❌ Service start/restart failed: %s%s", ColorRed, err, ColorReset)
+		log.Printf("%sCheck SSH connection and sudo permissions for %s@%s%s", ColorRed, remoteUser, remoteHost, ColorReset)
 		return
 	}
 
@@ -203,13 +203,13 @@ func testSSHConnection(remoteHost, remoteUser string) bool {
 
 	output, err := testCmd.CombinedOutput()
 	if err != nil {
-		log.Printf("❌ SSH connection failed: %s", err)
-		log.Printf("SSH output: %s", string(output))
-		log.Printf("Troubleshooting tips:")
-		log.Printf("  1. Check if SSH key is properly configured")
-		log.Printf("  2. Try manual SSH: ssh %s@%s", remoteUser, remoteHost)
-		log.Printf("  3. Check if the remote host is reachable: ping %s", remoteHost)
-		log.Printf("  4. Verify deploy.env has correct REMOTE_HOST and REMOTE_USER")
+		log.Printf("%s❌ SSH connection failed: %s%s", ColorRed, err, ColorReset)
+		log.Printf("%sSSH output: %s%s", ColorRed, string(output), ColorReset)
+		log.Printf("%sTroubleshooting tips:%s", ColorRed, ColorReset)
+		log.Printf("%s  1. Check if SSH key is properly configured%s", ColorRed, ColorReset)
+		log.Printf("%s  2. Try manual SSH: ssh %s@%s%s", ColorRed, remoteUser, remoteHost, ColorReset)
+		log.Printf("%s  3. Check if the remote host is reachable: ping %s%s", ColorRed, remoteHost, ColorReset)
+		log.Printf("%s  4. Verify deploy.env has correct REMOTE_HOST and REMOTE_USER%s", ColorRed, ColorReset)
 		return false
 	}
 
@@ -229,7 +229,7 @@ func getPassword(remoteUser, remoteHost string) string {
 	fd := int(syscall.Stdin)
 	password, err := term.ReadPassword(fd)
 	if err != nil {
-		log.Printf("Failed to read password: %s", err)
+		log.Printf("%s❌ Failed to read password: %s%s", ColorRed, err, ColorReset)
 		return ""
 	}
 
@@ -246,7 +246,7 @@ func getPassword(remoteUser, remoteHost string) string {
 func runSudoCommand(remoteUser, remoteHost, command string) error {
 	password := getPassword(remoteUser, remoteHost)
 	if password == "" {
-		return fmt.Errorf("no password provided")
+		return fmt.Errorf("%sno password provided%s", ColorRed, ColorReset)
 	}
 
 	// Create a temporary script on remote server to handle sudo with password
@@ -258,7 +258,7 @@ func runSudoCommand(remoteUser, remoteHost, command string) error {
 	// First, upload the script
 	sshCmd1 := exec.Command("ssh", fmt.Sprintf("%s@%s", remoteUser, remoteHost), uploadCmd)
 	if err := sshCmd1.Run(); err != nil {
-		return fmt.Errorf("failed to upload script: %v", err)
+		return fmt.Errorf("%sfailed to upload script: %v%s", ColorRed, err, ColorReset)
 	}
 
 	// Make it executable and run it
