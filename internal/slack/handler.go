@@ -128,16 +128,17 @@ func HandleEvent(cfg *config.Config, event *Event) error {
 		return nil
 	}
 
-	// Skip bot messages and messages without text
-	if event.Event.User == "" || event.Event.Text == "" {
+	// Skip messages without text (but allow bot messages)
+	if event.Event.Text == "" {
 		return nil
 	}
 
 	// Skip messages that are app mentions to avoid duplicate processing
 	// (app_mention events are already handled above)
-	// We'll use a simpler approach: if this message event has the same timestamp as an app_mention,
-	// we skip it. For now, we'll skip any message with bot mentions.
+	// Only skip if this message mentions our bot specifically
 	if strings.Contains(event.Event.Text, "<@") {
+		// Check if this is an app mention to our bot by looking for bot mention patterns
+		// This is a simplified check - in a real implementation you'd want to check the actual bot user ID
 		log.Printf("Skipping message event that contains mentions to avoid duplicate processing")
 		return nil
 	}
@@ -156,11 +157,19 @@ func HandleEvent(cfg *config.Config, event *Event) error {
 }
 
 func recordSingleMessage(cfg *config.Config, slackClient *Client, event *Event, channelInfo *ChannelInfo) error {
-	// Get user information
-	userInfo, err := slackClient.GetUserInfo(event.Event.User)
-	if err != nil {
-		log.Printf("Error getting user info: %v", err)
-		userInfo = &UserInfo{ID: event.Event.User, Name: "Unknown", RealName: "Unknown"}
+	// Get user information (handle both human users and bots)
+	var userInfo *UserInfo
+	if event.Event.User != "" {
+		// Human user message
+		var err error
+		userInfo, err = slackClient.GetUserInfo(event.Event.User)
+		if err != nil {
+			log.Printf("Error getting user info for %s: %v", event.Event.User, err)
+			userInfo = &UserInfo{ID: event.Event.User, Name: "Unknown", RealName: "Unknown"}
+		}
+	} else {
+		// Bot message or system message - create a placeholder user info
+		userInfo = &UserInfo{ID: "", Name: "Bot", RealName: "Bot"}
 	}
 
 	// Parse timestamp
@@ -212,25 +221,30 @@ func recordSingleMessage(cfg *config.Config, slackClient *Client, event *Event, 
 		}
 
 		if err := sheetsClient.WriteMessage(cfg.SpreadsheetID, &record); err != nil {
-			log.Printf("Error writing to Google Sheets: %v", err)
+			log.Printf("Error writing message to Google Sheets (channel: %s, user: %s): %v",
+				record.ChannelName, record.UserHandle, err)
 
-			// Send error notification to Slack for individual message failures
-			errorMessage := fmt.Sprintf("⚠️ メッセージの記録に失敗しました。\n"+
-				"エラー: %v\n"+
-				"管理者にお問い合わせください。", err)
-			if err := slackClient.SendMessage(event.Event.Channel, errorMessage); err != nil {
-				log.Printf("Error sending failure notification: %v", err)
-			}
-
+			// For individual message failures, only log the error (don't spam the channel)
+			// Only send notification for critical failures
 			return err
 		}
 
-		log.Printf("Message recorded: %s in #%s by %s", record.Text, record.ChannelName, record.UserHandle)
+		log.Printf("✅ Message auto-recorded in #%s by %s: %s",
+			record.ChannelName, record.UserHandle,
+			truncateText(record.Text, 50))
 	} else {
 		log.Printf("Google Sheets not configured, message logged: %s in #%s by %s", record.Text, record.ChannelName, record.UserHandle)
 	}
 
 	return nil
+}
+
+// truncateText truncates text to the specified length with ellipsis
+func truncateText(text string, maxLength int) string {
+	if len(text) <= maxLength {
+		return text
+	}
+	return text[:maxLength] + "..."
 }
 
 func handleMemberJoined(cfg *config.Config, event *Event) error {

@@ -19,6 +19,7 @@ settings:
     bot_events:
       - member_joined_channel
       - app_mention
+      - message.channels
   org_deploy_enabled: false
   socket_mode_enabled: false
   token_rotation_enabled: false
