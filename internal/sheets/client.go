@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/api/drive/v3"
 	"google.golang.org/api/option"
 	"google.golang.org/api/sheets/v4"
 )
@@ -26,7 +27,8 @@ var expectedHeaders = []interface{}{
 }
 
 type Client struct {
-	service *sheets.Service
+	service      *sheets.Service
+	driveService *drive.Service
 }
 
 func NewClient(credentialsJSON string) (*Client, error) {
@@ -59,7 +61,15 @@ func NewClient(credentialsJSON string) (*Client, error) {
 		return nil, fmt.Errorf("unable to create sheets service: %v", err)
 	}
 
-	return &Client{service: service}, nil
+	driveService, err := drive.NewService(ctx, option.WithCredentialsJSON(credentialsData))
+	if err != nil {
+		return nil, fmt.Errorf("unable to create drive service: %v", err)
+	}
+
+	return &Client{
+		service:      service,
+		driveService: driveService,
+	}, nil
 }
 
 const maxRetryAttempts = 4
@@ -896,4 +906,29 @@ func (c *Client) UpdateMessage(spreadsheetID string, record *MessageRecord) erro
 
 	log.Printf("Successfully updated message %s in sheet %s", record.MessageTS, sheetName)
 	return nil
+}
+
+// ShareSpreadsheet grants read access by email
+func (c *Client) ShareSpreadsheet(spreadsheetID, email string) error {
+	return retryWithBackoff(func() error {
+		permission := &drive.Permission{
+			Role:         "reader",
+			Type:         "user",
+			EmailAddress: email,
+		}
+
+		_, err := c.driveService.Permissions.Create(spreadsheetID, permission).Do()
+		if err != nil {
+			// Check if the permission already exists
+			if strings.Contains(err.Error(), "Permission already exists") ||
+				strings.Contains(err.Error(), "already has access") {
+				log.Printf("User %s already has access to spreadsheet %s", email, spreadsheetID)
+				return nil
+			}
+			return fmt.Errorf("unable to share spreadsheet: %v", err)
+		}
+
+		log.Printf("Successfully granted reader access to %s for spreadsheet %s", email, spreadsheetID)
+		return nil
+	}, fmt.Sprintf("share spreadsheet with %s", email))
 }

@@ -3,6 +3,7 @@ package slack
 import (
 	"fmt"
 	"log"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -263,6 +264,23 @@ func truncateText(text string, maxLength int) string {
 		return text
 	}
 	return text[:maxLength] + "..."
+}
+
+// extractEmailFromShowMe extracts email address from "show me" command
+func extractEmailFromShowMe(text string) string {
+	matches := regexp.MustCompile(`show\s+me\s+(.+)`).FindStringSubmatch(text)
+
+	if len(matches) > 1 {
+		emailContainsString := matches[1]
+		emailPattern := regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)
+		matches := emailPattern.FindStringSubmatch(emailContainsString)
+
+		if len(matches) > 0 {
+			return matches[0]
+		}
+	}
+
+	return ""
 }
 
 // isRateLimitError checks if the error is a Slack API rate limit error
@@ -556,14 +574,28 @@ func handleAppMention(cfg *config.Config, event *Event) error {
 	// Check if this is a reset request
 	isResetRequest := strings.Contains(strings.ToLower(event.Event.Text), "reset")
 
+	// Check if this is a "show me" command
+	isShowMeCmd := strings.Contains(strings.ToLower(event.Event.Text), "show me")
+	var extractedEmail string
+	if isShowMeCmd {
+		extractedEmail = extractEmailFromShowMe(event.Event.Text)
+	}
+
 	// First, record the mention message itself
 	if err := recordSingleMessage(cfg, slackClient, event, channelInfo); err != nil {
 		log.Printf("Error recording mention message: %v", err)
 	}
 
+	// Handle "show me" command
+	if isShowMeCmd {
+		return handleShowMeCommand(cfg, slackClient, event, channelInfo, extractedEmail)
+	}
+
 	// If not a reset request, just respond with instruction and return
 	if !isResetRequest {
-		ackMessage := "🤖 このチャンネルの記録を取得し直すには「Reset!」とメンションしてください"
+		ackMessage := "🔗 ユーザーにスプレッドシート閲覧権限を付与するには「show me <メールアドレス>」とメンションしてください\n" +
+			"🤖 このチャンネルの記録を取得し直すには「Reset!」とメンションしてください\n"
+
 		if err := slackClient.SendMessage(event.Event.Channel, ackMessage); err != nil {
 			log.Printf("Error sending acknowledgment message: %v", err)
 		}
@@ -709,5 +741,58 @@ func handleMessageChanged(cfg *config.Config, event *Event) error {
 		record.ChannelName, record.UserHandle,
 		truncateText(record.Text, 50))
 
+	return nil
+}
+
+// handleShowMeCommand handles the "show me" command to grant spreadsheet access
+func handleShowMeCommand(cfg *config.Config, slackClient *Client, event *Event, channelInfo *ChannelInfo, email string) error {
+	// Validate email
+	if email == "" {
+		errorMessage := "❌ 有効なメールアドレスが見つかりませんでした。\n" +
+			"使用例: `@bot show me test@example.com`"
+		if err := slackClient.SendMessage(event.Event.Channel, errorMessage); err != nil {
+			log.Printf("Error sending invalid email message: %v", err)
+		}
+		return nil
+	}
+
+	// Check if Google Sheets is configured
+	if cfg.GoogleSheetsCredentials == "" || cfg.SpreadsheetID == "" {
+		configMessage := "⚠️ Google Sheetsの設定が完了していません。管理者にお問い合わせください。"
+		if err := slackClient.SendMessage(event.Event.Channel, configMessage); err != nil {
+			log.Printf("Error sending config message: %v", err)
+		}
+		return nil
+	}
+
+	// Create Google Sheets client
+	sheetsClient, err := sheets.NewClient(cfg.GoogleSheetsCredentials)
+	if err != nil {
+		log.Printf("Error creating Google Sheets client for sharing: %v", err)
+		errorMessage := "❌ Google Sheetsへの接続に失敗しました。"
+		if err := slackClient.SendMessage(event.Event.Channel, errorMessage); err != nil {
+			log.Printf("Error sending connection error message: %v", err)
+		}
+		return err
+	}
+
+	// Share the spreadsheet
+	if err := sheetsClient.ShareSpreadsheet(cfg.SpreadsheetID, email); err != nil {
+		log.Printf("Error sharing spreadsheet with %s: %v", email, err)
+		errorMessage := fmt.Sprintf("❌ %s への権限付与に失敗しました（エラー: %v）", email, err)
+		if err := slackClient.SendMessage(event.Event.Channel, errorMessage); err != nil {
+			log.Printf("Error sending share error message: %v", err)
+		}
+		return err
+	}
+
+	// Send success message
+	sheetURL := fmt.Sprintf("https://docs.google.com/spreadsheets/d/%s", cfg.SpreadsheetID)
+	successMessage := fmt.Sprintf("✅ %s に<%s|スプレッドシート>の閲覧権限を付与しました。", email, sheetURL)
+	if err := slackClient.SendMessage(event.Event.Channel, successMessage); err != nil {
+		log.Printf("Error sending success message: %v", err)
+	}
+
+	log.Printf("Successfully granted spreadsheet access to %s for channel %s", email, channelInfo.Name)
 	return nil
 }
