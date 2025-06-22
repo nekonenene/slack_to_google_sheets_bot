@@ -1140,7 +1140,7 @@ func formatAttachments(attachments []Attachment) string {
 		}
 	}
 
-	return strings.Join(parts, "\n")
+	return strings.Join(parts, "\n\n")
 }
 
 // formatFiles converts file attachments to readable text format
@@ -1175,7 +1175,7 @@ func formatFiles(files []FileInfo) string {
 			if len(preview) > 200 {
 				preview = preview[:200] + "..."
 			}
-			fileParts = append(fileParts, fmt.Sprintf("内容: %s", preview))
+			fileParts = append(fileParts, fmt.Sprintf("Body: %s", preview))
 		}
 
 		if file.Permalink != "" {
@@ -1183,9 +1183,9 @@ func formatFiles(files []FileInfo) string {
 		}
 
 		if len(fileParts) > 0 {
-			parts = append(parts, "[ファイル] "+strings.Join(fileParts, " | "))
+			parts = append(parts, "[File] "+strings.Join(fileParts, " | "))
 		}
 	}
 
-	return strings.Join(parts, "\n")
+	return strings.Join(parts, "\n\n")
 }
