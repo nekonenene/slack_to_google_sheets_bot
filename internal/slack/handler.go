@@ -395,8 +395,8 @@ func performHistoryRetrievalWithStartTime(cfg *config.Config, slackClient *Clien
 
 		// Check if this is a rate limit error
 		if isRateLimitError(err) {
-			// Schedule retry after 2 minutes with preserved original start time
-			scheduleHistoryRetry(cfg, event.Event.Channel, channelInfo.Name, isInitialRecording, originalStartTime, 2*time.Minute)
+			// Schedule retry after 3 minutes with preserved original start time
+			scheduleHistoryRetry(cfg, event.Event.Channel, channelInfo.Name, isInitialRecording, originalStartTime, 3*time.Minute)
 			return nil // Don't return error, let the retry handle it
 		}
 
