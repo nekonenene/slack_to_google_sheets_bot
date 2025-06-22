@@ -442,21 +442,12 @@ func performHistoryRetrievalWithStartTime(cfg *config.Config, slackClient *Clien
 	historyProgressMutex.Unlock()
 
 	log.Printf("Checking for new messages after original start time: %v (channel: %s)", startTime, event.Event.Channel)
+	log.Printf("Wait for 5 minutes before checking for new messages to avoid rate limits")
+	time.Sleep(5 * time.Minute) // Wait to avoid rate limits
 	newMessages, err := slackClient.getMessagesAfterTime(event.Event.Channel, channelInfo.Name, startTime)
+
 	if err != nil {
 		log.Printf("Error: Could not get new messages after history retrieval: %v", err)
-
-		// Check if this is a rate limit error for new messages retrieval
-		if isRateLimitError(err) {
-			rateLimitMessage := "⏳ 処理中の新着メッセージ取得でレート制限が発生しました。2分後に再開します..."
-			if err := slackClient.SendMessage(event.Event.Channel, rateLimitMessage); err != nil {
-				log.Printf("Error sending rate limit message for new messages: %v", err)
-			}
-
-			// Schedule retry for the entire process to ensure new messages are captured
-			scheduleHistoryRetry(cfg, event.Event.Channel, channelInfo.Name, isInitialRecording, originalStartTime, 2*time.Minute)
-			return nil // Don't return error, let the retry handle it
-		}
 
 		// For non-rate-limit errors, send error message but continue
 		errorMessage := "⚠️ 処理中の新着メッセージ取得に失敗しました。一部のメッセージが記録されていない可能性があります。"
