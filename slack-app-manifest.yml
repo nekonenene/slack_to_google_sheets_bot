@@ -14,7 +14,7 @@ features:
     messages_tab_enabled: false
     messages_tab_read_only_enabled: false
   bot_user:
-    display_name: SheetsRecorder
+    display_name: Sheets Recorder
     always_online: true
 oauth_config:
   scopes:
