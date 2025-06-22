@@ -483,7 +483,7 @@ func performHistoryRetrievalWithStartTime(cfg *config.Config, slackClient *Clien
 	}
 
 	// Send completion message
-	sheetURL := fmt.Sprintf("https://docs.google.com/spreadsheets/d/%s", cfg.SpreadsheetID)
+	sheetURL := buildSheetURLWithGID(cfg, sheetsClient, event.Event.Channel, channelInfo.Name)
 	var completionMessage string
 
 	totalRecorded := len(records)
@@ -769,7 +769,7 @@ func handleShowMeCommand(cfg *config.Config, slackClient *Client, event *Event, 
 	}
 
 	// Send success message
-	sheetURL := fmt.Sprintf("https://docs.google.com/spreadsheets/d/%s", cfg.SpreadsheetID)
+	sheetURL := buildSheetURLWithGID(cfg, sheetsClient, event.Event.Channel, channelInfo.Name)
 	successMessage := fmt.Sprintf("✅ %s に<%s|スプレッドシート>の閲覧権限を付与しました。", email, sheetURL)
 	if err := slackClient.SendMessage(event.Event.Channel, successMessage); err != nil {
 		log.Printf("Error sending success message: %v", err)
@@ -777,6 +777,24 @@ func handleShowMeCommand(cfg *config.Config, slackClient *Client, event *Event, 
 
 	log.Printf("Successfully granted spreadsheet access to %s for channel %s", email, channelInfo.Name)
 	return nil
+}
+
+// buildSheetURLWithGID builds a Google Sheets URL with specific sheet ID (gid) parameter
+func buildSheetURLWithGID(cfg *config.Config, sheetsClient *sheets.Client, channelID, channelName string) string {
+	baseURL := fmt.Sprintf("https://docs.google.com/spreadsheets/d/%s", cfg.SpreadsheetID)
+
+	// Generate sheet name to match the one used in ensureChannelSheetExists
+	sheetName := fmt.Sprintf("%s-%s", channelName, channelID)
+
+	// Try to get the sheet ID (gid)
+	if sheetID, err := sheetsClient.GetSheetID(cfg.SpreadsheetID, sheetName); err == nil {
+		// Return URL with gid parameter for direct navigation to the specific sheet
+		return fmt.Sprintf("%s/edit?gid=%d#gid=%d", baseURL, sheetID, sheetID)
+	} else {
+		log.Printf("Warning: Could not get sheet ID for %s: %v", sheetName, err)
+		// Fallback to basic URL without gid
+		return fmt.Sprintf("%s/edit", baseURL)
+	}
 }
 
 // convertSlackTimestampToJST converts a Slack timestamp string to JST time

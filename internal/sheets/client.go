@@ -908,6 +908,31 @@ func (c *Client) UpdateMessage(spreadsheetID string, record *MessageRecord) erro
 	return nil
 }
 
+// GetSheetID gets the sheet ID (gid) for a specific sheet name
+func (c *Client) GetSheetID(spreadsheetID, sheetName string) (int64, error) {
+	var sheetID int64
+	var err error
+
+	err = retryWithBackoff(func() error {
+		spreadsheet, getErr := c.service.Spreadsheets.Get(spreadsheetID).Do()
+		if getErr != nil {
+			return fmt.Errorf("unable to get spreadsheet: %v", getErr)
+		}
+
+		// Find the sheet by name
+		for _, sheet := range spreadsheet.Sheets {
+			if sheet.Properties.Title == sheetName {
+				sheetID = sheet.Properties.SheetId
+				return nil
+			}
+		}
+
+		return fmt.Errorf("sheet %s not found", sheetName)
+	}, fmt.Sprintf("get sheet ID for %s", sheetName))
+
+	return sheetID, err
+}
+
 // ShareSpreadsheet grants read access by email
 func (c *Client) ShareSpreadsheet(spreadsheetID, email string) error {
 	return retryWithBackoff(func() error {
