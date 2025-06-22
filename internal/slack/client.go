@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -635,12 +634,8 @@ func (c *Client) GetChannelHistoryWithProgress(channelID, channelName string, li
 					userInfo = &UserInfo{ID: "", Name: "System", RealName: "System"}
 				}
 
-				// Parse timestamp
-				ts, err := strconv.ParseFloat(msg.Timestamp, 64)
-				if err != nil {
-					ts = float64(time.Now().Unix())
-				}
-				timestamp := time.Unix(int64(ts), 0)
+				// Parse timestamp and convert to JST
+				timestamp := convertSlackTimestampToJST(msg.Timestamp)
 
 				// Format message text
 				formattedText := c.FormatMessageText(msg.Text)
@@ -714,11 +709,7 @@ func (c *Client) GetChannelHistoryWithProgress(channelID, channelName string, li
 							userInfo = &UserInfo{ID: "", Name: "System", RealName: "System"}
 						}
 
-						ts, err := strconv.ParseFloat(reply.Timestamp, 64)
-						if err != nil {
-							ts = float64(time.Now().Unix())
-						}
-						timestamp := time.Unix(int64(ts), 0)
+						timestamp := convertSlackTimestampToJST(reply.Timestamp)
 
 						formattedText := c.FormatMessageText(reply.Text)
 
@@ -901,12 +892,8 @@ func (c *Client) getMessagesAfterTime(channelID, channelName string, afterTime t
 
 		for _, msg := range historyResp.Messages {
 			if msg.Type == "message" {
-				// Parse timestamp
-				ts, err := strconv.ParseFloat(msg.Timestamp, 64)
-				if err != nil {
-					continue
-				}
-				msgTime := time.Unix(int64(ts), 0)
+				// Parse timestamp and convert to JST
+				msgTime := convertSlackTimestampToJST(msg.Timestamp)
 
 				// If we encounter a message older than or equal to afterTime, stop processing
 				// since messages are ordered newest first
@@ -976,11 +963,7 @@ func (c *Client) getMessagesAfterTime(channelID, channelName string, afterTime t
 			for _, msg := range historyResp.Messages {
 				if msg.ThreadTS != "" && msg.ThreadTS == msg.Timestamp {
 					// Parse parent message timestamp to check if it's newer than afterTime
-					parentTs, err := strconv.ParseFloat(msg.Timestamp, 64)
-					if err != nil {
-						continue
-					}
-					parentTime := time.Unix(int64(parentTs), 0)
+					parentTime := convertSlackTimestampToJST(msg.Timestamp)
 
 					// Only get thread replies for parent messages newer than afterTime
 					if parentTime.Before(afterTime) || parentTime.Equal(afterTime) {
@@ -997,11 +980,7 @@ func (c *Client) getMessagesAfterTime(channelID, channelName string, afterTime t
 					// Process thread replies, filtering by afterTime
 					for _, reply := range threadReplies {
 						if reply.Type == "message" {
-							ts, err := strconv.ParseFloat(reply.Timestamp, 64)
-							if err != nil {
-								continue
-							}
-							replyTime := time.Unix(int64(ts), 0)
+							replyTime := convertSlackTimestampToJST(reply.Timestamp)
 
 							// Only include thread replies that are newer than afterTime
 							if replyTime.Before(afterTime) || replyTime.Equal(afterTime) {

@@ -19,6 +19,20 @@ const (
 )
 
 var (
+	// JST timezone for timestamp conversion
+	jstLocation *time.Location
+)
+
+func init() {
+	var err error
+	jstLocation, err = time.LoadLocation("Asia/Tokyo")
+	if err != nil {
+		log.Printf("Warning: Could not load JST timezone, using UTC: %v", err)
+		jstLocation = time.UTC
+	}
+}
+
+var (
 	processingEvents      = make(map[string]bool)
 	processingMutex       = sync.Mutex{}
 	recentMentions        = make(map[string]time.Time)
@@ -176,12 +190,8 @@ func recordSingleMessage(cfg *config.Config, slackClient *Client, event *Event, 
 		userInfo = &UserInfo{ID: "", Name: "Bot", RealName: "Bot"}
 	}
 
-	// Parse timestamp
-	ts, err := strconv.ParseFloat(event.Event.Timestamp, 64)
-	if err != nil {
-		ts = float64(time.Now().Unix())
-	}
-	timestamp := time.Unix(int64(ts), 0)
+	// Parse timestamp and convert to JST
+	timestamp := convertSlackTimestampToJST(event.Event.Timestamp)
 
 	// Format message text (convert mentions and channels)
 	formattedText := slackClient.FormatMessageText(event.Event.Text)
@@ -677,12 +687,8 @@ func handleMessageChanged(cfg *config.Config, event *Event) error {
 		userInfo = &UserInfo{ID: "", Name: "Bot", RealName: "Bot"}
 	}
 
-	// Parse timestamp
-	ts, err := strconv.ParseFloat(changedMessage.Timestamp, 64)
-	if err != nil {
-		ts = float64(time.Now().Unix())
-	}
-	timestamp := time.Unix(int64(ts), 0)
+	// Parse timestamp and convert to JST
+	timestamp := convertSlackTimestampToJST(changedMessage.Timestamp)
 
 	// Format message text
 	formattedText := slackClient.FormatMessageText(changedMessage.Text)
@@ -771,4 +777,17 @@ func handleShowMeCommand(cfg *config.Config, slackClient *Client, event *Event, 
 
 	log.Printf("Successfully granted spreadsheet access to %s for channel %s", email, channelInfo.Name)
 	return nil
+}
+
+// convertSlackTimestampToJST converts a Slack timestamp string to JST time
+func convertSlackTimestampToJST(timestampStr string) time.Time {
+	ts, err := strconv.ParseFloat(timestampStr, 64)
+	if err != nil {
+		log.Printf("Error parsing timestamp %s, using current time: %v", timestampStr, err)
+		return time.Now().In(jstLocation)
+	}
+
+	// Convert Unix timestamp to UTC time, then to JST
+	utcTime := time.Unix(int64(ts), 0)
+	return utcTime.In(jstLocation)
 }

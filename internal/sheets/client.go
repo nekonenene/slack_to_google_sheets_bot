@@ -18,7 +18,7 @@ import (
 // Expected headers for Google Sheets
 var expectedHeaders = []interface{}{
 	"No.",
-	"投稿日時",
+	"投稿日時（JST）",
 	"発信者（ハンドル名）",
 	"発信者（本名）",
 	"発言内容",
