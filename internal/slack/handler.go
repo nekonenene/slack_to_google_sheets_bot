@@ -193,8 +193,8 @@ func recordSingleMessage(cfg *config.Config, slackClient *Client, event *Event, 
 	// Parse timestamp and convert to JST
 	timestamp := convertSlackTimestampToJST(event.Event.Timestamp)
 
-	// Format message text (convert mentions and channels)
-	formattedText := slackClient.FormatMessageText(event.Event.Text)
+	// Format message text including attachments (convert mentions and channels)
+	formattedText := slackClient.FormatMessageWithAttachments(event.Event.Text, event.Event.Attachments, event.Event.Files)
 
 	// Create message record
 	record := sheets.MessageRecord{
@@ -690,8 +690,8 @@ func handleMessageChanged(cfg *config.Config, event *Event) error {
 	// Parse timestamp and convert to JST
 	timestamp := convertSlackTimestampToJST(changedMessage.Timestamp)
 
-	// Format message text
-	formattedText := slackClient.FormatMessageText(changedMessage.Text)
+	// Format message text including attachments
+	formattedText := slackClient.FormatMessageWithAttachments(changedMessage.Text, changedMessage.Attachments, changedMessage.Files)
 
 	// Create message record for the edited message
 	record := sheets.MessageRecord{

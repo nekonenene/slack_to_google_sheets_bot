@@ -324,13 +324,15 @@ type ResponseMetadata struct {
 }
 
 type HistoryMessage struct {
-	Type      string `json:"type"`
-	User      string `json:"user"`
-	Text      string `json:"text"`
-	Timestamp string `json:"ts"`
-	ThreadTS  string `json:"thread_ts,omitempty"`
-	BotID     string `json:"bot_id,omitempty"`
-	Username  string `json:"username,omitempty"`
+	Type        string       `json:"type"`
+	User        string       `json:"user"`
+	Text        string       `json:"text"`
+	Timestamp   string       `json:"ts"`
+	ThreadTS    string       `json:"thread_ts,omitempty"`
+	BotID       string       `json:"bot_id,omitempty"`
+	Username    string       `json:"username,omitempty"`
+	Attachments []Attachment `json:"attachments,omitempty"`
+	Files       []FileInfo   `json:"files,omitempty"`
 }
 
 func (c *Client) GetChannelHistory(channelID string, limit int) ([]HistoryMessage, error) {
@@ -637,8 +639,8 @@ func (c *Client) GetChannelHistoryWithProgress(channelID, channelName string, li
 				// Parse timestamp and convert to JST
 				timestamp := convertSlackTimestampToJST(msg.Timestamp)
 
-				// Format message text
-				formattedText := c.FormatMessageText(msg.Text)
+				// Format message text including attachments
+				formattedText := c.FormatMessageWithAttachments(msg.Text, msg.Attachments, msg.Files)
 
 				record := &sheets.MessageRecord{
 					Timestamp:    timestamp,
@@ -711,7 +713,7 @@ func (c *Client) GetChannelHistoryWithProgress(channelID, channelName string, li
 
 						timestamp := convertSlackTimestampToJST(reply.Timestamp)
 
-						formattedText := c.FormatMessageText(reply.Text)
+						formattedText := c.FormatMessageWithAttachments(reply.Text, reply.Attachments, reply.Files)
 
 						record := &sheets.MessageRecord{
 							Timestamp:    timestamp,
@@ -832,6 +834,28 @@ func (c *Client) FormatMessageText(text string) string {
 	return text
 }
 
+// FormatMessageWithAttachments formats message text including attachments and files
+func (c *Client) FormatMessageWithAttachments(text string, attachments []Attachment, files []FileInfo) string {
+	formattedText := c.FormatMessageText(text)
+
+	var parts []string
+	if formattedText != "" {
+		parts = append(parts, formattedText)
+	}
+
+	// Add attachment content
+	if attachmentText := formatAttachments(attachments); attachmentText != "" {
+		parts = append(parts, attachmentText)
+	}
+
+	// Add file content
+	if fileText := formatFiles(files); fileText != "" {
+		parts = append(parts, fileText)
+	}
+
+	return strings.Join(parts, "\n")
+}
+
 // getMessagesAfterTime retrieves messages posted after a specific time
 // Uses optimized approach: starts from latest messages and stops when encountering older messages
 func (c *Client) getMessagesAfterTime(channelID, channelName string, afterTime time.Time) ([]*sheets.MessageRecord, error) {
@@ -936,7 +960,7 @@ func (c *Client) getMessagesAfterTime(channelID, channelName string, afterTime t
 					userInfo = &UserInfo{ID: "", Name: "System", RealName: "System"}
 				}
 
-				formattedText := c.FormatMessageText(msg.Text)
+				formattedText := c.FormatMessageWithAttachments(msg.Text, msg.Attachments, msg.Files)
 
 				record := &sheets.MessageRecord{
 					Timestamp:    msgTime,
@@ -1021,7 +1045,7 @@ func (c *Client) getMessagesAfterTime(channelID, channelName string, afterTime t
 								userInfo = &UserInfo{ID: "", Name: "System", RealName: "System"}
 							}
 
-							formattedText := c.FormatMessageText(reply.Text)
+							formattedText := c.FormatMessageWithAttachments(reply.Text, reply.Attachments, reply.Files)
 
 							replyRecord := &sheets.MessageRecord{
 								Timestamp:    replyTime,
@@ -1068,4 +1092,100 @@ func (c *Client) getMessagesAfterTime(channelID, channelName string, afterTime t
 
 	log.Printf("Retrieved %d new messages after %v from channel %s", len(allRecords), afterTime, channelID)
 	return allRecords, nil
+}
+
+// formatAttachments converts attachments to readable text format
+func formatAttachments(attachments []Attachment) string {
+	if len(attachments) == 0 {
+		return ""
+	}
+
+	var parts []string
+	for _, att := range attachments {
+		var attParts []string
+
+		if att.Pretext != "" {
+			attParts = append(attParts, att.Pretext)
+		}
+
+		if att.Title != "" {
+			if att.TitleLink != "" {
+				attParts = append(attParts, fmt.Sprintf("[%s](%s)", att.Title, att.TitleLink))
+			} else {
+				attParts = append(attParts, att.Title)
+			}
+		}
+
+		if att.Text != "" {
+			attParts = append(attParts, att.Text)
+		}
+
+		// Add fields
+		for _, field := range att.Fields {
+			if field.Title != "" && field.Value != "" {
+				attParts = append(attParts, fmt.Sprintf("%s: %s", field.Title, field.Value))
+			}
+		}
+
+		if att.Footer != "" {
+			attParts = append(attParts, att.Footer)
+		}
+
+		if att.Fallback != "" && len(attParts) == 0 {
+			attParts = append(attParts, att.Fallback)
+		}
+
+		if len(attParts) > 0 {
+			parts = append(parts, "[attachment] "+strings.Join(attParts, " | "))
+		}
+	}
+
+	return strings.Join(parts, "\n")
+}
+
+// formatFiles converts file attachments to readable text format
+func formatFiles(files []FileInfo) string {
+	if len(files) == 0 {
+		return ""
+	}
+
+	var parts []string
+	for _, file := range files {
+		var fileParts []string
+
+		if file.Title != "" {
+			fileParts = append(fileParts, file.Title)
+		} else if file.Name != "" {
+			fileParts = append(fileParts, file.Name)
+		}
+
+		if file.PrettyType != "" {
+			fileParts = append(fileParts, fmt.Sprintf("(%s)", file.PrettyType))
+		} else if file.Filetype != "" {
+			fileParts = append(fileParts, fmt.Sprintf("(%s)", file.Filetype))
+		}
+
+		if file.Size > 0 {
+			fileParts = append(fileParts, fmt.Sprintf("%d bytes", file.Size))
+		}
+
+		// Add preview for text files
+		if file.Preview != "" {
+			preview := file.Preview
+			if len(preview) > 200 {
+				preview = preview[:200] + "..."
+			}
+			fileParts = append(fileParts, fmt.Sprintf("内容: %s", preview))
+		}
+
+		if file.Permalink != "" {
+			fileParts = append(fileParts, fmt.Sprintf("URL: %s", file.Permalink))
+		}
+
+		if len(fileParts) > 0 {
+			parts = append(parts, "[ファイル] "+strings.Join(fileParts, " | "))
+		}
+	}
+
+	return strings.Join(parts, "\n")
 }
