@@ -1131,6 +1131,13 @@ func formatAttachments(attachments []Attachment) string {
 			attParts = append(attParts, att.Footer)
 		}
 
+		// Add timestamp if available
+		if att.Timestamp != "" {
+			if ts := convertSlackTimestampToJST(att.Timestamp); !ts.IsZero() {
+				attParts = append(attParts, fmt.Sprintf("時刻: %s", ts.Format("2006-01-02 15:04:05")))
+			}
+		}
+
 		if att.Fallback != "" && len(attParts) == 0 {
 			attParts = append(attParts, att.Fallback)
 		}

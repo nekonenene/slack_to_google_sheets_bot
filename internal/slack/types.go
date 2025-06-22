@@ -46,7 +46,7 @@ type EditInfo struct {
 
 // Attachment represents a Slack message attachment (rich text, links, etc.)
 type Attachment struct {
-	ID         int64             `json:"id,omitempty"`
+	ID         interface{}       `json:"id,omitempty"`         // Can be int64 or string
 	Fallback   string            `json:"fallback,omitempty"`   // Plain text fallback
 	Text       string            `json:"text,omitempty"`       // Main text content
 	Pretext    string            `json:"pretext,omitempty"`    // Text before the attachment
@@ -61,7 +61,7 @@ type Attachment struct {
 	ThumbURL   string            `json:"thumb_url,omitempty"`
 	Footer     string            `json:"footer,omitempty"`
 	FooterIcon string            `json:"footer_icon,omitempty"`
-	Timestamp  int64             `json:"ts,omitempty"`
+	Timestamp  string            `json:"ts,omitempty"` // Slack timestamp as string
 }
 
 // AttachmentField represents a field within an attachment
